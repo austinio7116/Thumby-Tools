@@ -2,6 +2,7 @@
 patterns without shooting. 100 pts per kill, 10000 bonus for perfect (40/40)."""
 
 from constants import *
+from constants import get_idle_frames
 import random
 
 # Challenge flight paths — enemies fly IN, loop/swoop across screen, fly OUT.
@@ -164,7 +165,8 @@ class ChallengeState:
 
                 # All enemies in this wave are the same type
                 ce.node.frame_current_y = wave_enemy_type
-                ce.node.frame_current_x = IDLE_FRAME_A
+                ia, ib = get_idle_frames(wave_enemy_type)
+                ce.node.frame_current_x = ia
                 ce.node.playing = False
                 ce.node.opacity = 0.0
                 ce.node.position.x = -200

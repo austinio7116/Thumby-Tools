@@ -98,32 +98,33 @@ class BulletManager:
     def draw(self, fb):
         has_frames = len(self.frames) >= 5
 
-        # Player bullets — faithful recreation of original sprite:
-        # Blue 1px tip, blue 3px wide head, red tail going UP
-        # (flipped vertically from enemy since player shoots up)
-        COL_BLUE = const(0x001F)
+        # Player bullets — white/silver shaft with red/cyan arrowhead at bottom
+        # Original: 4px white shaft, then 3px wide red arrowhead with cyan center
+        COL_SILVER = const(0xDEDB)  # (222,222,222)
         for i in range(MAX_PLAYER_BULLETS):
             if self.p_active[i]:
                 sx = int(self.p_x[i] + 64)
                 sy = int(self.p_y[i] + 64)
                 if 1 <= sx < 126 and 0 <= sy < 122:
-                    # Red tail (bottom, 1px wide x 3px)
-                    fb.vline(sx, sy + 5, 3, COL_RED)
-                    # Blue head (3px wide x 2px)
-                    fb.rect(sx - 1, sy + 3, 3, 2, COL_BLUE, True)
-                    # Blue tip (1px wide x 2px)
-                    fb.vline(sx, sy + 1, 2, COL_BLUE)
+                    # Silver shaft (top, 1px wide x 4px)
+                    fb.vline(sx, sy, 4, COL_SILVER)
+                    # Red arrowhead (3px wide x 2px)
+                    fb.rect(sx - 1, sy + 4, 3, 2, COL_RED, True)
+                    fb.pixel(sx, sy + 4, COL_CYAN)  # cyan center
+                    # Red tail tip
+                    fb.pixel(sx, sy + 6, COL_RED)
 
-        # Enemy bullets — same shape pointing DOWN:
-        # Blue tip at top, blue 3px head, red tail below
+        # Enemy bullets — silver/white shaft with red arrow tip at bottom
+        # Original: blue arrowhead at top, red shaft below
+        # User wants: silver shaft, red arrow tip
         for i in range(MAX_ENEMY_BULLETS):
             if self.e_active[i]:
                 sx = int(self.e_x[i] + 64)
                 sy = int(self.e_y[i] + 64)
                 if 1 <= sx < 126 and 0 <= sy < 122:
-                    # Blue tip (1px wide x 2px)
-                    fb.vline(sx, sy, 2, COL_BLUE)
-                    # Blue head (3px wide x 2px)
-                    fb.rect(sx - 1, sy + 2, 3, 2, COL_BLUE, True)
-                    # Red tail (1px wide x 3px)
-                    fb.vline(sx, sy + 4, 3, COL_RED)
+                    # Silver shaft (top, 1px wide x 4px)
+                    fb.vline(sx, sy, 4, COL_SILVER)
+                    # Red arrow tip (3px wide x 2px)
+                    fb.rect(sx - 1, sy + 4, 3, 2, COL_RED, True)
+                    # Red point
+                    fb.pixel(sx, sy + 6, COL_RED)

@@ -55,21 +55,20 @@ class Enemy:
         node.position.x = -200
         node.position.y = -200
 
-    def flash_hit(self):
-        """Show dying palette briefly before explosion."""
+    def start_dying(self):
+        """Show dying palette. Node stays visible briefly, then kill() hides it."""
+        self.alive = False  # count as dead immediately for stage clear checks
         if self.node and self._orig_type in DYING_PALETTE:
             self.node.frame_current_y = DYING_PALETTE[self._orig_type]
-            self.hit_flash = 0.08  # seconds to show flash
+        self.hit_flash = 0.12  # seconds to show dying palette before hiding
 
     def update_flash(self, dt):
-        """Update hit flash timer. Returns True if flash expired (ready to explode)."""
+        """Update hit flash timer. Returns True if flash expired (ready to hide)."""
         if self.hit_flash > 0:
             self.hit_flash -= dt
             if self.hit_flash <= 0:
                 self.hit_flash = 0
-                # Restore normal palette
-                if self.node:
-                    self.node.frame_current_y = self._orig_type
+                self.kill()
                 return True
         return False
 

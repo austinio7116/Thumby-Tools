@@ -1,10 +1,12 @@
 """Transform enemies: a bee morphs into 3 special enemies that dive through and exit.
 They fire bullets on the way down. Always 3 of the same type.
 Scorpions (stages 4-6, 1000 pts), Bosconians (7-9, 2000 pts), Galaxians (10-12, 3000 pts).
-Cycle repeats after that. Each individual kill = 160 pts."""
+Cycle repeats. Each individual kill = 160 pts.
+Pre-morph: bee pulsates through colors for ~1s before transforming."""
 
 import random
 from constants import *
+from constants import get_idle_frames
 
 
 def get_transform_type(stage):
@@ -15,7 +17,6 @@ def get_transform_type(stage):
 
 
 def get_transform_bonus(stage):
-    """Bonus for killing all 3 in a group."""
     if stage < 4:
         return 0
     cycle = ((stage - 4) // 3) % 3
@@ -24,7 +25,6 @@ def get_transform_bonus(stage):
 
 TRANSFORM_INDIVIDUAL_PTS = const(160)
 
-# Dive paths — wider spread than before
 TRANSFORM_PATH_LEFT = [
     (0, 0), (-20, 25), (-30, 55), (-15, 85), (5, 110), (0, 145),
 ]
@@ -35,9 +35,12 @@ TRANSFORM_PATH_CENTER = [
     (0, 0), (-8, 30), (12, 60), (-8, 90), (5, 120), (0, 145),
 ]
 TRANSFORM_PATHS = [TRANSFORM_PATH_LEFT, TRANSFORM_PATH_RIGHT, TRANSFORM_PATH_CENTER]
-
-# Spacing between enemies in the group (wider than before)
 TRANSFORM_SPREAD = const(14)
+
+# Pre-morph pulsation: cycle through color rows
+PREMORPH_DURATION = 1.0  # seconds to pulsate before morphing
+PREMORPH_COLORS = [ENEMY_BEE, ENEMY_PRETRANSFORM, ENEMY_BEE_DYING,
+                   ENEMY_PRETRANSFORM, ENEMY_BEE, ENEMY_PRETRANSFORM]
 
 
 class TransformGroup:
@@ -62,10 +65,17 @@ class TransformManager:
         self.groups = []
         self.morph_timer = 0.0
         self.morph_interval = 8.0
+        # Pre-morph state
+        self.premorph_bee = None       # the bee that's pulsating
+        self.premorph_timer = 0.0
+        self.premorph_stage = 0
+        self.premorph_ttype = None
 
     def reset(self):
         self.groups = []
         self.morph_timer = 5.0
+        self.premorph_bee = None
+        self.premorph_timer = 0.0
 
     @micropython.native
     def try_morph(self, formation, stage, enemy_nodes, dt):
@@ -73,6 +83,23 @@ class TransformManager:
         if ttype is None:
             return None
 
+        # Handle pre-morph pulsation
+        if self.premorph_bee is not None:
+            self.premorph_timer -= dt
+            if self.premorph_timer > 0:
+                # Cycle through color palettes
+                phase = int((PREMORPH_DURATION - self.premorph_timer) / PREMORPH_DURATION * len(PREMORPH_COLORS))
+                phase = min(phase, len(PREMORPH_COLORS) - 1)
+                if self.premorph_bee.node:
+                    self.premorph_bee.node.frame_current_y = PREMORPH_COLORS[phase]
+                return None  # still pulsating
+            else:
+                # Pulsation done — do the actual morph
+                bee = self.premorph_bee
+                self.premorph_bee = None
+                return self._do_morph(bee, ttype, stage, enemy_nodes)
+
+        # Check if it's time to start a morph
         self.morph_timer -= dt
         if self.morph_timer > 0:
             return None
@@ -87,10 +114,18 @@ class TransformManager:
         if source_bee is None:
             return None
 
+        # Start pre-morph pulsation
+        self.premorph_bee = source_bee
+        self.premorph_timer = PREMORPH_DURATION
+        self.premorph_ttype = ttype
+        self.premorph_stage = stage
+        return None  # morph will complete after pulsation
+
+    def _do_morph(self, source_bee, ttype, stage, enemy_nodes):
+        """Actually perform the morph after pulsation is done."""
         sx = source_bee.node.position.x
         sy = source_bee.node.position.y
         source_bee.kill()
-        formation.count_alive()
 
         # Find 3 unused enemy nodes
         nodes_found = []
@@ -114,9 +149,9 @@ class TransformManager:
         group.enemies = []
         for i, node in enumerate(nodes_found):
             node.frame_current_y = ttype
-            node.frame_current_x = IDLE_FRAME_A
+            ia, ib = get_idle_frames(ttype)
+            node.frame_current_x = ia
             node.opacity = 1.0
-            # Spread: left(-14), center(0), right(+14)
             node.position.x = sx + (i - 1) * TRANSFORM_SPREAD
             node.position.y = sy
             node.scale.x = 1.0
@@ -127,8 +162,6 @@ class TransformManager:
 
     @micropython.native
     def update(self, dt, bullet_fire_fn=None):
-        """Update all active transform groups.
-        bullet_fire_fn(x, y) — call to fire an enemy bullet."""
         finished = []
         for g in self.groups:
             if not g.active:
@@ -147,12 +180,10 @@ class TransformManager:
                 finished.append(g)
                 continue
 
-            # Each enemy follows the path independently with diverging offsets
-            seg_count = len(path) - 1
+            # Each enemy follows path independently with diverging offsets
             for i, (node, alive) in enumerate(g.enemies):
                 if not alive:
                     continue
-                # Each enemy has a slight time offset so they spread apart
                 ei_t = g.t - i * 0.06
                 if ei_t < 0:
                     ei_t = 0
@@ -168,7 +199,6 @@ class TransformManager:
                 cx = g.start_x + x0 + (x1 - x0) * seg_t
                 cy = g.start_y + y0 + (y1 - y0) * seg_t
 
-                # Diverge horizontally as they progress
                 spread = (i - 1) * TRANSFORM_SPREAD * (0.5 + g.t)
                 node.position.x = cx + spread
                 node.position.y = cy
@@ -178,7 +208,6 @@ class TransformManager:
                 g.fire_timer -= dt
                 if g.fire_timer <= 0:
                     g.fire_timer = random.random() * 0.8 + 0.4
-                    # Random alive member fires
                     alive_nodes = [n for n, a in g.enemies if a]
                     if alive_nodes:
                         shooter = random.choice(alive_nodes)
@@ -188,7 +217,6 @@ class TransformManager:
         return finished
 
     def check_bullet_hit(self, bx, by):
-        """Check if a bullet hits any transform enemy. Returns (group, index) or None."""
         for g in self.groups:
             if not g.active:
                 continue
@@ -201,7 +229,6 @@ class TransformManager:
         return None
 
     def check_player_collision(self, px, py):
-        """Check if player collides with any transform enemy. Returns (group, index) or None."""
         for g in self.groups:
             if not g.active:
                 continue

@@ -35,6 +35,9 @@ ENEMY_SATELLITE_DYING = const(18)
 ENEMY_PRETRANSFORM = const(19)  # pulsating bee before morphing
 NUM_ENEMY_TYPES = const(20)
 
+# Hostile captured fighter — uses player_captured (red) sprite, not in enemy sheet
+HOSTILE_FIGHTER_POINTS = const(1000)
+
 # Points: (in_formation, diving)
 POINTS_BEE = (50, 100)
 POINTS_BUTTERFLY = (80, 160)
@@ -103,10 +106,24 @@ PLAYER_HALF_W = const(5)
 PLAYER_HALF_H = const(5)
 
 # Enemy sprite frames (frame 0 = facing left, frame 7 = facing down)
-ENEMY_FRAMES = const(8)      # 8 rotation frames per enemy type
-IDLE_FRAME_A = const(6)       # facing-down frame 1
-IDLE_FRAME_B = const(7)       # facing-down frame 2
+ENEMY_FRAMES = const(8)      # max rotation frames per enemy type
+IDLE_FRAME_A = const(6)       # facing-down frame 1 (for 8-frame enemies)
+IDLE_FRAME_B = const(7)       # facing-down frame 2 (for 8-frame enemies)
 IDLE_ANIM_FPS = 3.0           # idle wing-flap speed (frames per second)
+
+# Per-type frame count (some enemies have fewer rotation frames)
+ENEMY_FRAME_COUNT = (8, 8, 8, 8, 7, 7, 7, 7, 6, 7,  # normal types
+                     8, 8, 8, 7, 7, 7, 7, 7, 6, 6)   # dying + pretransform
+
+# Per-type idle frames (the two "facing down" frames for animation)
+def get_idle_frames(etype):
+    fc = ENEMY_FRAME_COUNT[etype] if etype < len(ENEMY_FRAME_COUNT) else 8
+    if fc >= 8:
+        return 6, 7
+    elif fc >= 6:
+        return fc - 2, fc - 1  # last two frames
+    else:
+        return 0, 1
 
 # Colors (RGB565)
 COL_BLACK = const(0x0000)

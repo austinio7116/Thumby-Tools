@@ -97,7 +97,11 @@ def load_sfx(path):
         return None
 
 shoot_sfx = load_sfx("assets/shoot.wav")
-explode_sfx = load_sfx("assets/explode.wav")
+explode_bee_sfx = load_sfx("assets/explode.wav")
+explode_butterfly_sfx = load_sfx("assets/explode2.wav")
+explode_boss_hit_sfx = load_sfx("assets/explode3.wav")  # non-fatal boss hit
+explode_boss_sfx = load_sfx("assets/explode_boss.wav")   # boss kill + transforms
+beam_capture_sfx = load_sfx("assets/beam_capture.wav")    # beam with capture
 die_sfx = load_sfx("assets/player_die.wav")
 dive_sfx = load_sfx("assets/dive.wav")
 beam_sfx = load_sfx("assets/beam.wav")
@@ -258,6 +262,194 @@ def update_rescue(dt):
     return False
 
 
+# ── Hostile captured fighter ───────────────────────────────
+# When boss holding captured ship is killed in formation,
+# the red fighter becomes an autonomous enemy that dives and shoots.
+# If killed → destroyed. If survives → joins next stage behind a boss.
+import math as _math
+
+hostile_fighter_active = False
+hostile_fighter_alive = False
+hostile_fighter_carry = False  # carry to next stage
+hostile_fighter_x = 0.0
+hostile_fighter_y = 0.0
+hostile_fighter_start_x = 0.0
+hostile_fighter_start_y = 0.0
+hostile_fighter_dive_t = 0.0
+hostile_fighter_fire_timer = 0.0
+hostile_fighter_path = None
+
+
+def activate_hostile_fighter(x, y):
+    """Turn captured ship into hostile autonomous enemy at given position."""
+    global hostile_fighter_active, hostile_fighter_alive
+    global hostile_fighter_x, hostile_fighter_y, hostile_fighter_dive_t
+    global hostile_fighter_fire_timer, hostile_fighter_path, hostile_fighter_carry
+    hostile_fighter_active = True
+    hostile_fighter_alive = True
+    hostile_fighter_carry = False
+    hostile_fighter_x = x
+    hostile_fighter_y = y
+    hostile_fighter_dive_t = 0.0
+    hostile_fighter_fire_timer = 1.0 + random.random()
+    hostile_fighter_path = None  # stays in formation initially
+    captured_ship_node.texture = captured_tex  # red
+    captured_ship_node.opacity = 1.0
+    captured_ship_node.position.x = x
+    captured_ship_node.position.y = y
+    captured_ship_node.rotation = 0
+
+
+def start_hostile_dive():
+    """Start the hostile fighter diving."""
+    global hostile_fighter_dive_t, hostile_fighter_path, hostile_fighter_start_x, hostile_fighter_start_y
+    from dive import DIVE_CENTER, DIVE_SWEEP_LEFT, DIVE_SWEEP_RIGHT
+    hostile_fighter_dive_t = 0.0
+    hostile_fighter_start_x = hostile_fighter_x
+    hostile_fighter_start_y = hostile_fighter_y
+    hostile_fighter_path = random.choice([DIVE_CENTER, DIVE_SWEEP_LEFT, DIVE_SWEEP_RIGHT])
+
+
+def kill_hostile_fighter():
+    """Permanently destroy the hostile fighter."""
+    global hostile_fighter_active, hostile_fighter_alive, hostile_fighter_carry
+    hostile_fighter_active = False
+    hostile_fighter_alive = False
+    hostile_fighter_carry = False
+    captured_ship_node.opacity = 0.0
+    captured_ship_node.position.x = -200
+    captured_ship_node.position.y = -200
+
+
+def update_hostile_fighter(dt, bullet_mgr, player_x):
+    """Update hostile fighter behavior. Returns 'hit_player' if it hits the player."""
+    global hostile_fighter_x, hostile_fighter_y, hostile_fighter_dive_t
+    global hostile_fighter_fire_timer, hostile_fighter_active, hostile_fighter_carry
+
+    if not hostile_fighter_active or not hostile_fighter_alive:
+        return None
+
+    # If no dive path, wait briefly then start diving
+    if hostile_fighter_path is None:
+        hostile_fighter_fire_timer -= dt
+        if hostile_fighter_fire_timer <= 0:
+            start_hostile_dive()
+        captured_ship_node.position.x = hostile_fighter_x
+        captured_ship_node.position.y = hostile_fighter_y
+        return None
+
+    # Advance along dive path
+    hostile_fighter_dive_t += dt * 0.5  # moderate speed
+
+    path = hostile_fighter_path
+    seg_count = len(path) - 1
+
+    if hostile_fighter_dive_t >= 1.0:
+        # Exited screen — carry to next stage
+        hostile_fighter_active = False
+        hostile_fighter_carry = True  # will rejoin next stage
+        captured_ship_node.opacity = 0.0
+        captured_ship_node.position.x = -200
+        return None
+
+    t_scaled = hostile_fighter_dive_t * seg_count
+    seg_idx = int(t_scaled)
+    seg_t = t_scaled - seg_idx
+    if seg_idx >= seg_count:
+        seg_idx = seg_count - 1
+        seg_t = 1.0
+
+    x0, y0 = path[seg_idx]
+    x1, y1 = path[seg_idx + 1]
+    hostile_fighter_x = hostile_fighter_start_x + x0 + (x1 - x0) * seg_t
+    hostile_fighter_y = hostile_fighter_start_y + y0 + (y1 - y0) * seg_t
+
+    # Clamp to screen
+    hostile_fighter_x = max(-60, min(60, hostile_fighter_x))
+
+    captured_ship_node.position.x = hostile_fighter_x
+    captured_ship_node.position.y = hostile_fighter_y
+
+    # Fire bullets while diving
+    hostile_fighter_fire_timer -= dt
+    if hostile_fighter_fire_timer <= 0:
+        hostile_fighter_fire_timer = 0.8 + random.random() * 0.5
+        bullet_mgr.fire_enemy(hostile_fighter_x, hostile_fighter_y, player_x)
+
+    return None
+
+
+hostile_fighter_entry_timer = 0.0
+hostile_fighter_entry_target_boss = None
+
+
+def attach_hostile_to_boss(formation_obj):
+    """Set up the carried hostile fighter to fly in and attach to a boss."""
+    global hostile_fighter_carry, hostile_fighter_active, hostile_fighter_alive
+    global hostile_fighter_entry_timer, hostile_fighter_entry_target_boss
+
+    if not hostile_fighter_carry:
+        return
+
+    # Find the first alive boss
+    target = None
+    for e in formation_obj.enemies:
+        if e is not None and e.alive and (e.type == ENEMY_BOSS or e.type == ENEMY_BOSS_HIT):
+            target = e
+            break
+
+    if target is None:
+        hostile_fighter_carry = False
+        return
+
+    # Set up entry animation — will fly in from top after entry pattern finishes
+    hostile_fighter_entry_target_boss = target
+    hostile_fighter_entry_timer = 7.0  # delay: fly in after normal entry (~6s)
+    hostile_fighter_carry = False
+    hostile_fighter_active = False
+    hostile_fighter_alive = False
+
+    # Position off-screen at top
+    captured_ship_node.texture = captured_tex
+    captured_ship_node.opacity = 0.0
+    captured_ship_node.position.x = 0
+    captured_ship_node.position.y = -80
+
+
+def update_hostile_entry(dt, formation_obj):
+    """Animate the carried fighter flying in to attach behind a boss."""
+    global hostile_fighter_entry_timer, hostile_fighter_entry_target_boss
+    global capturing_boss
+
+    if hostile_fighter_entry_target_boss is None:
+        return
+
+    hostile_fighter_entry_timer -= dt
+    if hostile_fighter_entry_timer > 0:
+        return  # still waiting for normal entry to finish
+
+    boss = hostile_fighter_entry_target_boss
+    if not boss.alive:
+        hostile_fighter_entry_target_boss = None
+        return
+
+    # Fly from top of screen to above the boss
+    t = min((-hostile_fighter_entry_timer) / 1.5, 1.0)  # 1.5s fly-in
+    target_x = boss.node.position.x
+    target_y = boss.node.position.y - 12
+
+    captured_ship_node.opacity = 1.0
+    captured_ship_node.position.x = target_x * t  # approach from center-top
+    captured_ship_node.position.y = -70 + (target_y + 70) * t
+
+    if t >= 1.0:
+        # Arrived — attach to boss
+        capturing_boss = boss
+        captured_ship_node.position.x = target_x
+        captured_ship_node.position.y = target_y
+        hostile_fighter_entry_target_boss = None
+
+
 # Tractor beam — procedurally drawn fan, no sprite node
 # Beam colors (RGB565): alternating cyan/blue lines like original
 BEAM_COL_1 = const(0x07FF)  # cyan
@@ -285,6 +477,14 @@ def start_beam(boss_enemy):
     beam_reveal = 0.0
     beam_boss = boss_enemy
     beam_boss.dive_path = None  # stop normal dive movement
+    # Tractor beam runs solo — release any escorts back to formation
+    for esc in beam_boss.escorts:
+        if esc.alive:
+            esc.in_formation = True
+            esc.is_escort = False
+            esc.dive_path = None
+            esc.node.scale.x = 1.0
+    beam_boss.escorts = []
 
 
 def stop_beam():
@@ -479,17 +679,21 @@ def update_enemy_frames(formation, dt):
         _idle_timer -= 1.0 / IDLE_ANIM_FPS
         _idle_frame = not _idle_frame
 
-    idle_fx = IDLE_FRAME_B if _idle_frame else IDLE_FRAME_A
-
     for e in formation.enemies:
         if e is None or not e.alive:
             continue
+        if e.hit_flash > 0:
+            continue  # don't change frame while showing dying palette
+
+        # Get per-type idle frames
+        ia, ib = get_idle_frames(e._orig_type)
+        idle_fx = ib if _idle_frame else ia
+        max_frame = ENEMY_FRAME_COUNT[e._orig_type] if e._orig_type < len(ENEMY_FRAME_COUNT) else 8
+
         if e.in_formation:
-            # Idle: alternate between two facing-down frames
             e.node.frame_current_x = idle_fx
             e.node.scale.x = 1.0
         elif e.node.opacity > 0:
-            # Moving (entry or dive): pick frame from velocity
             nx = e.node.position.x
             last = e._last_x if hasattr(e, '_last_x') else nx
             dx = nx - last
@@ -497,22 +701,20 @@ def update_enemy_frames(formation, dt):
 
             adx = abs(dx)
             if adx > 2:
-                frame = 0      # facing sideways
+                frame = 0
             elif adx > 0.8:
-                frame = 2      # angled
+                frame = min(2, max_frame - 1)
             elif adx > 0.3:
-                frame = 4      # mostly down
+                frame = min(4, max_frame - 1)
             else:
-                frame = idle_fx  # straight down
+                frame = idle_fx
 
-            # Mirror horizontally for leftward movement
-            # (frame 0 faces right by default, mirror for left)
             if dx < -0.3:
                 e.node.scale.x = -1.0
             elif dx > 0.3:
                 e.node.scale.x = 1.0
 
-            e.node.frame_current_x = frame
+            e.node.frame_current_x = min(frame, max_frame - 1)
 
 
 # ── Game state ──────────────────────────────────────────────
@@ -526,6 +728,19 @@ challenge_state = ChallengeState()
 def play_sfx(sfx, channel):
     if sfx:
         engine_audio.play(sfx, channel, False)
+
+
+def get_explode_sfx(etype):
+    """Get the correct death sound for an enemy type."""
+    if etype == ENEMY_BOSS or etype == ENEMY_BOSS_HIT:
+        return explode_boss_sfx
+    elif etype == ENEMY_BUTTERFLY:
+        return explode_butterfly_sfx
+    elif etype == ENEMY_BEE:
+        return explode_bee_sfx
+    elif etype >= ENEMY_SCORPION:
+        return explode_boss_sfx  # transforms use boss kill sound
+    return explode_bee_sfx
 
 
 def check_extra_life():
@@ -568,6 +783,10 @@ def start_stage():
     level.set_stage(hud.stage)
     formation.dive_timer = level.dive_interval
 
+    # If hostile fighter carried from previous stage, attach to a boss
+    if hostile_fighter_carry:
+        attach_hostile_to_boss(formation)
+
 
 def hide_all_enemies():
     """Hide all enemy nodes."""
@@ -588,7 +807,21 @@ def reset_game():
     transforms.reset()
     stop_beam()
     release_captured_ship()
+    kill_hostile_fighter()
     next_extra_life = EXTRA_LIFE_FIRST
+
+
+def handle_player_fire():
+    """Handle player firing — shared across all gameplay states."""
+    if engine_io.A.is_just_pressed and player.alive:
+        fired = False
+        if player.dual_fighter:
+            fired = bullets.fire_player(player.position.x, player.position.y)
+            bullets.fire_player(player.position.x + WINGMAN_OFFSET_X, player.position.y)
+        else:
+            fired = bullets.fire_player(player.position.x, player.position.y)
+        if fired:
+            play_sfx(shoot_sfx, CH_SHOOT)
 
 
 @micropython.native
@@ -678,9 +911,7 @@ while True:
             player.update(dt, engine_io.LEFT.is_pressed,
                          engine_io.RIGHT.is_pressed)
 
-            if engine_io.A.is_just_pressed:
-                if bullets.fire_player(player.position.x, player.position.y):
-                    play_sfx(shoot_sfx, CH_SHOOT)
+            handle_player_fire()
 
             bullets.update(dt)
 
@@ -690,12 +921,12 @@ while True:
                 bullets.p_active[bi] = False
                 e.hp -= 1
                 if e.hp <= 0:
-                    e.flash_hit()
+                    e.start_dying()
                     explosions.spawn(e.node.position.x, e.node.position.y)
-                    play_sfx(explode_sfx, CH_EXPLODE)
+                    play_sfx(get_explode_sfx(e.type), CH_EXPLODE)
                     pts = POINTS[min(e.type, len(POINTS)-1)][0]
                     hud.add_score(pts)
-                    e.kill()
+                    # kill deferred — start_dying() handles it after flash
                     formation.count_alive()
 
             bullets.draw(fb)
@@ -715,16 +946,7 @@ while True:
                 wingman_node.position.x = player.position.x + WINGMAN_OFFSET_X
                 wingman_node.position.y = player.position.y
 
-            if engine_io.A.is_just_pressed and player.alive:
-                fired = False
-                if player.dual_fighter:
-                    # Dual fighter: both ships fire together
-                    fired = bullets.fire_player(player.position.x, player.position.y)
-                    bullets.fire_player(player.position.x + WINGMAN_OFFSET_X, player.position.y)
-                else:
-                    fired = bullets.fire_player(player.position.x, player.position.y)
-                if fired:
-                    play_sfx(shoot_sfx, CH_SHOOT)
+            handle_player_fire()
 
             # Formation movement
             formation.update(dt)
@@ -779,9 +1001,9 @@ while True:
                 if e.hp <= 0:
                     diving = not e.in_formation
                     # Flash dying palette then explode
-                    e.flash_hit()
+                    e.start_dying()
                     explosions.spawn(e.node.position.x, e.node.position.y)
-                    play_sfx(explode_sfx, CH_EXPLODE)
+                    play_sfx(get_explode_sfx(e.type), CH_EXPLODE)
                     # Boss convoy scoring
                     is_boss = e.type == ENEMY_BOSS or e.type == ENEMY_BOSS_HIT
                     if is_boss and diving and len(e.escorts) > 0:
@@ -795,16 +1017,23 @@ while True:
                     hud.add_score(pts)
                     if is_boss and capturing_boss is e and diving:
                         start_rescue()
+                        engine_audio.stop(CH_PLAYER_DIE)  # stop capture sound
+                        engine_audio.stop(CH_MUSIC)
                         play_sfx(rescue_sfx, CH_MUSIC)
                     elif is_boss and capturing_boss is e and not diving:
-                        release_captured_ship()
-                    e.kill()
+                        # Boss killed in formation — captured ship becomes hostile enemy
+                        hx = captured_ship_node.position.x
+                        hy = captured_ship_node.position.y
+                        capturing_boss = None
+                        activate_hostile_fighter(hx, hy)
+                    # kill deferred — start_dying() handles it after flash
                     formation.count_alive()
                 else:
                     # Boss hit but not dead — switch to hit sprite
                     if e.type == ENEMY_BOSS:
                         e.node.frame_current_y = ENEMY_BOSS_HIT
                         e.type = ENEMY_BOSS_HIT
+                        play_sfx(explode_boss_hit_sfx, CH_EXPLODE)
 
             # Enemy bullets vs player
             hit_idx = check_enemy_bullets_vs_player(bullets, player)
@@ -864,7 +1093,7 @@ while True:
                         ey = g.enemies[idx][0].position.y
                         transforms.kill_enemy(g, idx)
                         explosions.spawn(ex, ey)
-                        play_sfx(explode_sfx, CH_EXPLODE)
+                        play_sfx(explode_boss_sfx, CH_EXPLODE)  # transforms use boss kill sound
                         hud.add_score(TRANSFORM_INDIVIDUAL_PTS)
                         # Bonus if all 3 killed
                         if g.kills >= 3:
@@ -893,6 +1122,46 @@ while True:
                     play_sfx(die_sfx, CH_PLAYER_DIE)
                     stop_beam()
 
+            # Hostile captured fighter
+            if hostile_fighter_active and hostile_fighter_alive:
+                update_hostile_fighter(dt, bullets, player.position.x)
+
+                # Check player bullets vs hostile fighter
+                if hostile_fighter_active:
+                    for bi in range(MAX_PLAYER_BULLETS):
+                        if not bullets.p_active[bi]:
+                            continue
+                        dx = abs(bullets.p_x[bi] - hostile_fighter_x)
+                        dy = abs(bullets.p_y[bi] - hostile_fighter_y)
+                        if dx < PLAYER_HALF_W and dy < PLAYER_HALF_H:
+                            bullets.p_active[bi] = False
+                            explosions.spawn(hostile_fighter_x, hostile_fighter_y)
+                            play_sfx(explode_boss_sfx, CH_EXPLODE)
+                            hud.add_score(HOSTILE_FIGHTER_POINTS)
+                            popups.spawn(HOSTILE_FIGHTER_POINTS, hostile_fighter_x, hostile_fighter_y)
+                            kill_hostile_fighter()
+                            break
+
+                # Check hostile fighter body vs player
+                if hostile_fighter_active and player.alive and not player.is_invincible():
+                    dx = abs(player.position.x - hostile_fighter_x)
+                    dy = abs(player.position.y - hostile_fighter_y)
+                    if dx < PLAYER_HALF_W + 4 and dy < PLAYER_HALF_H + 4:
+                        explosions.spawn(hostile_fighter_x, hostile_fighter_y)
+                        kill_hostile_fighter()
+                        state = ST_DYING
+                        state_timer = 1.5
+                        player.alive = False
+                        player.opacity = 0.0
+                        wingman_node.opacity = 0.0
+                        player_exp_node.position.x = player.position.x
+                        player_exp_node.position.y = player.position.y
+                        player_exp_node.opacity = 1.0
+                        player_exp_node.frame_current_x = 0
+                        player_exp_node.playing = True
+                        play_sfx(die_sfx, CH_PLAYER_DIE)
+                        stop_beam()
+
             # Extra life check
             check_extra_life()
 
@@ -918,9 +1187,7 @@ while True:
             player.update(dt, engine_io.LEFT.is_pressed,
                          engine_io.RIGHT.is_pressed)
 
-            if engine_io.A.is_just_pressed:
-                if bullets.fire_player(player.position.x, player.position.y):
-                    play_sfx(shoot_sfx, CH_SHOOT)
+            handle_player_fire()
 
             # Update challenge wave enemies (fly-through patterns)
             done = update_challenge(challenge_state, dt)
@@ -956,7 +1223,7 @@ while True:
                         ce.active = False
                         ce.node.opacity = 0.0
                         explosions.spawn(ex, ey)
-                        play_sfx(explode_sfx, CH_EXPLODE)
+                        play_sfx(explode_bee_sfx, CH_EXPLODE)
                         challenge_state.kills += 1
                         challenge_state.wave_kills[ce.wave_idx] += 1
                         hud.add_score(CHALLENGE_HIT_POINTS)
@@ -964,7 +1231,17 @@ while True:
                         if challenge_state.wave_kills[ce.wave_idx] >= CHALLENGE_ENEMIES_PER_WAVE \
                            and not challenge_state.wave_done[ce.wave_idx]:
                             challenge_state.wave_done[ce.wave_idx] = True
-                            wave_bonus = 1000
+                            # Bonus depends on which challenge stage this is
+                            # Challenges at stages 3,7,11,15,19,23,27...
+                            challenge_num = (hud.stage - 3) // 4 + 1
+                            if challenge_num <= 2:
+                                wave_bonus = 1000
+                            elif challenge_num <= 4:
+                                wave_bonus = 1500
+                            elif challenge_num <= 6:
+                                wave_bonus = 2000
+                            else:
+                                wave_bonus = 3000
                             hud.add_score(wave_bonus)
                             popups.spawn(wave_bonus, ex, ey)
                         break
@@ -1067,6 +1344,19 @@ while True:
             if state_timer <= 0 and engine_io.A.is_just_pressed:
                 hide_all_enemies()
                 state = ST_TITLE
+
+        # ── Update hostile fighter entry (flying in from previous stage) ──
+        if hostile_fighter_entry_target_boss is not None:
+            update_hostile_entry(dt, formation)
+
+        # ── Update dying enemy flash timers ──
+        _any_died = False
+        for e in formation.enemies:
+            if e is not None and e.hit_flash > 0:
+                if e.update_flash(dt):
+                    _any_died = True
+        if _any_died:
+            formation.count_alive()
 
         # ── Always draw popups ──
         popups.update_and_draw(dt)
