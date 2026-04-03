@@ -6,7 +6,8 @@ class Enemy:
                  'state', 'dive_t', 'dive_path', 'dive_start_x',
                  'dive_start_y', 'in_formation', 'alive',
                  'entry_t', 'entry_path', 'entry_done',
-                 'fire_timer')
+                 'fire_timer', 'escorts', 'is_escort', '_last_x',
+                 'hit_flash', '_orig_type')
 
     def __init__(self):
         self.node = None
@@ -24,6 +25,11 @@ class Enemy:
         self.entry_path = None
         self.entry_done = False
         self.fire_timer = 0.0
+        self.escorts = []
+        self.is_escort = False
+        self._last_x = 0.0
+        self.hit_flash = 0.0    # countdown: >0 means showing dying palette
+        self._orig_type = ENEMY_BEE
 
     def init_for_stage(self, etype, col, row, node):
         self.type = etype
@@ -38,14 +44,38 @@ class Enemy:
         self.dive_t = 0.0
         self.dive_path = None
         self.fire_timer = 0.0
+        self.escorts = []
+        self.is_escort = False
+        self._last_x = -200.0
+        self.hit_flash = 0.0
+        self._orig_type = etype
         node.frame_current_y = etype
         node.frame_current_x = 6  # facing-down idle frame
         node.opacity = 0.0  # hidden until entry begins
         node.position.x = -200
         node.position.y = -200
 
+    def flash_hit(self):
+        """Show dying palette briefly before explosion."""
+        if self.node and self._orig_type in DYING_PALETTE:
+            self.node.frame_current_y = DYING_PALETTE[self._orig_type]
+            self.hit_flash = 0.08  # seconds to show flash
+
+    def update_flash(self, dt):
+        """Update hit flash timer. Returns True if flash expired (ready to explode)."""
+        if self.hit_flash > 0:
+            self.hit_flash -= dt
+            if self.hit_flash <= 0:
+                self.hit_flash = 0
+                # Restore normal palette
+                if self.node:
+                    self.node.frame_current_y = self._orig_type
+                return True
+        return False
+
     def kill(self):
         self.alive = False
+        self.hit_flash = 0
         if self.node:
             self.node.opacity = 0.0
 

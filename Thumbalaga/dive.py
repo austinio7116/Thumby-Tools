@@ -72,14 +72,35 @@ def select_dive_path(enemy):
         return random.choice([DIVE_SWEEP_RIGHT, DIVE_CENTER, DIVE_LOOP])
 
 
-def start_dive(enemy):
-    """Initiate a dive attack for an enemy."""
+def start_dive(enemy, formation=None):
+    """Initiate a dive attack. Boss grabs nearby butterfly escorts if formation given."""
     enemy.in_formation = False
     enemy.dive_t = 0.0
     enemy.dive_start_x = enemy.node.position.x
     enemy.dive_start_y = enemy.node.position.y
     enemy.dive_path = select_dive_path(enemy)
     enemy.fire_timer = random.random() * 0.5 + 0.3
+    enemy.escorts = []
+
+    # Boss convoy: grab 1-2 butterflies from rows 1-2 as escorts
+    if formation and (enemy.type == ENEMY_BOSS or enemy.type == ENEMY_BOSS_HIT):
+        for row in [1, 2]:  # butterfly rows
+            for dc in [0, -1, 1, -2, 2]:
+                col = enemy.slot_col + dc
+                if col < 0 or col >= FORM_COLS:
+                    continue
+                esc = formation.get_enemy(col, row)
+                if esc and esc.alive and esc.in_formation and \
+                   esc.type == ENEMY_BUTTERFLY and len(enemy.escorts) < 2:
+                    esc.in_formation = False
+                    esc.is_escort = True
+                    esc.dive_path = enemy.dive_path
+                    esc.dive_t = 0.0
+                    esc.dive_start_x = esc.node.position.x
+                    esc.dive_start_y = esc.node.position.y
+                    enemy.escorts.append(esc)
+            if len(enemy.escorts) >= 2:
+                break
 
 
 @micropython.native
@@ -95,11 +116,21 @@ def update_diving_enemy(enemy, dt, dive_speed, formation):
         enemy.in_formation = True
         enemy.dive_t = 0.0
         enemy.dive_path = None
-        # Snap to formation slot
+        enemy.node.scale.x = 1.0
         sx, sy = formation.get_slot_screen_pos(enemy.slot_col, enemy.slot_row)
         enemy.node.position.x = sx
         enemy.node.position.y = sy
-        enemy.node.scale.x = 1.0  # reset mirror
+        # Return escorts too
+        for esc in enemy.escorts:
+            if esc.alive:
+                esc.in_formation = True
+                esc.is_escort = False
+                esc.dive_path = None
+                esc.node.scale.x = 1.0
+                esx, esy = formation.get_slot_screen_pos(esc.slot_col, esc.slot_row)
+                esc.node.position.x = esx
+                esc.node.position.y = esy
+        enemy.escorts = []
         return True
 
     t_scaled = enemy.dive_t * seg_count
@@ -128,21 +159,21 @@ def update_diving_enemy(enemy, dt, dive_speed, formation):
 
 
 def maybe_trigger_dive(formation, level, dt):
-    """Periodically select an enemy to dive based on level difficulty."""
+    """Periodically select an enemy to dive. Returns the enemy if one started, else None."""
     formation.dive_timer -= dt
     if formation.dive_timer > 0:
-        return
+        return None
 
     formation.dive_timer = level.dive_interval
 
-    # Check how many are already diving
     diving_count = len(formation.get_diving_enemies())
     if diving_count >= level.max_divers:
-        return
+        return None
 
     candidates = formation.get_alive_in_formation()
     if not candidates:
-        return
+        return None
 
     enemy = random.choice(candidates)
-    start_dive(enemy)
+    start_dive(enemy, formation)
+    return enemy

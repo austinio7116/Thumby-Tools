@@ -14,6 +14,7 @@ class Player(Sprite2DNode):
         self.alive = True
         self.respawn_timer = 0.0
         self.invincible_timer = 0.0
+        self.dual_fighter = False  # True = double firepower
 
     def reset(self):
         self.position.x = PLAYER_START_X
@@ -21,6 +22,11 @@ class Player(Sprite2DNode):
         self.alive = True
         self.opacity = 1.0
         self.invincible_timer = 2.0
+        self.dual_fighter = False
+
+    def rescue_ship(self):
+        """Activate dual fighter mode."""
+        self.dual_fighter = True
 
     def is_invincible(self):
         return self.invincible_timer > 0
@@ -32,7 +38,6 @@ class Player(Sprite2DNode):
 
         if self.invincible_timer > 0:
             self.invincible_timer -= dt
-            # Blink effect
             self.opacity = 0.3 if int(self.invincible_timer * 10) % 2 else 1.0
         else:
             self.opacity = 1.0

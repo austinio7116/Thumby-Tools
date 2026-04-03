@@ -20,13 +20,15 @@ from bullets import BulletManager
 from stars import Starfield
 from explosions import ExplosionManager
 from hud import HUD
-from dive import update_diving_enemy, maybe_trigger_dive
+from dive import update_diving_enemy, maybe_trigger_dive, start_dive
 from entry_patterns import EntryState, get_entry_pattern, update_entry
 from collision import (check_player_bullets_vs_enemies,
                        check_enemy_bullets_vs_player,
                        check_divers_vs_player)
+from transforms import TransformManager, TRANSFORM_INDIVIDUAL_PTS
+from popups import ScorePopups
 from level import LevelData
-from challenge import ChallengeState, update_challenge, CHALLENGE_HIT_POINTS, CHALLENGE_PERFECT_BONUS, CHALLENGE_TOTAL
+from challenge import ChallengeState, update_challenge, CHALLENGE_HIT_POINTS, CHALLENGE_PERFECT_BONUS, CHALLENGE_TOTAL, CHALLENGE_ENEMIES_PER_WAVE
 
 # ── Setup ───────────────────────────────────────────────────
 engine.fps_limit(60)
@@ -35,9 +37,48 @@ camera = CameraNode()  # Default position (0, 0, 0) — sprites use -64 to +64
 engine_draw.set_background_color(Color(COL_BLACK))
 
 
+# ── Loading screen with logo ───────────────────────────────
+_load_count = 0
+_load_total = 20  # approximate number of resources to load
+
+def _draw_loading(fb_ref=None):
+    global _load_count
+    _load_count += 1
+    engine.tick()
+    fb = engine_draw.back_fb()
+    # Draw loading bar at bottom
+    bar_y = 115
+    bar_h = 6
+    bar_x = 20
+    bar_w = 88
+    progress = min(_load_count / _load_total, 1.0)
+    fb.rect(bar_x, bar_y, bar_w, bar_h, COL_WHITE, False)  # outline
+    fill_w = int((bar_w - 2) * progress)
+    if fill_w > 0:
+        fb.rect(bar_x + 1, bar_y + 1, fill_w, bar_h - 2, COL_CYAN, True)  # fill
+    engine_draw.text(None, "LOADING", None, 40, 104, 1, 0, 1.0)
+
+
+# Show logo
+try:
+    _logo_tex = TextureResource("assets/logo.bmp")
+    _logo_node = Sprite2DNode()
+    _logo_node.texture = _logo_tex
+    _logo_node.transparent_color = transparent
+    _logo_node.position.x = 0
+    _logo_node.position.y = 0
+    _logo_node.layer = 20
+    camera.add_child(_logo_node)
+    engine.tick()
+except:
+    _logo_node = None
+
+_draw_loading()
+
+
 # ── Load resources ──────────────────────────────────────────
 def load_tex(path):
-    engine.tick()
+    _draw_loading()
     return TextureResource(path)
 
 
@@ -45,34 +86,51 @@ player_tex = load_tex("assets/player.bmp")
 enemy_tex = load_tex("assets/enemies.bmp")
 explosion_tex = load_tex("assets/explosion.bmp")
 player_exp_tex = load_tex("assets/player_explosion.bmp")
-beam_tex = load_tex("assets/tractor_beam.bmp")
+captured_tex = load_tex("assets/player_captured.bmp")
 
-# Try to load sounds - use None if not available
-shoot_sfx = None
-explode_sfx = None
-die_sfx = None
-try:
-    shoot_sfx = WaveSoundResource("assets/shoot.wav")
-except:
-    pass
-try:
-    explode_sfx = WaveSoundResource("assets/explode.wav")
-except:
-    pass
-try:
-    die_sfx = WaveSoundResource("assets/player_die.wav")
-except:
-    pass
+# Load sounds — None if file missing
+def load_sfx(path):
+    _draw_loading()
+    try:
+        return WaveSoundResource(path)
+    except:
+        return None
+
+shoot_sfx = load_sfx("assets/shoot.wav")
+explode_sfx = load_sfx("assets/explode.wav")
+die_sfx = load_sfx("assets/player_die.wav")
+dive_sfx = load_sfx("assets/dive.wav")
+beam_sfx = load_sfx("assets/beam.wav")
+capture_sfx = load_sfx("assets/capture.wav")
+transform_sfx = load_sfx("assets/transform.wav")
+extra_life_sfx = load_sfx("assets/extra_life.wav")
+rescue_sfx = load_sfx("assets/rescue.wav")
+enemy_shot_sfx = load_sfx("assets/enemy_shot.wav")
+level_start_sfx = load_sfx("assets/level_start.wav")
+challenge_start_sfx = load_sfx("assets/challenge_start.wav")
+challenge_over_sfx = load_sfx("assets/challenge_over.wav")
+challenge_perfect_sfx = load_sfx("assets/challenge_perfect.wav")
+
+transparent = Color(COL_MAGENTA)
 
 
 # ── Create player ───────────────────────────────────────────
 player = Player(player_tex)
 camera.add_child(player)
 
+# Wingman node — appears next to player in dual fighter mode
+wingman_node = Sprite2DNode()
+wingman_node.texture = player_tex
+wingman_node.transparent_color = transparent
+wingman_node.opacity = 0.0
+wingman_node.layer = 10
+camera.add_child(wingman_node)
+
+WINGMAN_OFFSET_X = const(10)  # how far right the wingman sits
+
 
 # ── Create enemy node pool ──────────────────────────────────
 enemy_nodes = []
-transparent = Color(COL_MAGENTA)
 for i in range(FORM_COLS * FORM_ROWS):
     engine.tick()
     node = Sprite2DNode()
@@ -112,7 +170,7 @@ for i in range(MAX_EXPLOSIONS):
 player_exp_node = Sprite2DNode()
 player_exp_node.texture = player_exp_tex
 player_exp_node.transparent_color = transparent
-player_exp_node.frame_count_x = EXPLOSION_FRAMES
+player_exp_node.frame_count_x = 4  # player explosion has 4 frames (section 2)
 player_exp_node.frame_count_y = 1
 player_exp_node.fps = EXPLOSION_FPS
 player_exp_node.playing = False
@@ -121,138 +179,290 @@ player_exp_node.opacity = 0.0
 player_exp_node.layer = 16
 camera.add_child(player_exp_node)
 
-# Tractor beam node
-beam_node = Sprite2DNode()
-beam_node.texture = beam_tex
-beam_node.transparent_color = transparent
-beam_node.frame_count_x = 3   # 3 animation frames
-beam_node.frame_count_y = 1
-beam_node.fps = BEAM_FPS
-beam_node.playing = False
-beam_node.loop = True
-beam_node.opacity = 0.0
-beam_node.layer = 4  # behind enemies
-camera.add_child(beam_node)
+# Captured ship node — red version, shown held by boss
+captured_ship_node = Sprite2DNode()
+captured_ship_node.texture = captured_tex
+captured_ship_node.transparent_color = transparent
+captured_ship_node.opacity = 0.0
+captured_ship_node.layer = 6
+camera.add_child(captured_ship_node)
 
-# Beam state machine
-# Phase 0: inactive
-# Phase 1: boss diving down to hover position
-# Phase 2: hovering, beam expanding
-# Phase 3: beam active (checking for capture)
-# Phase 4: beam retracting, boss returning to formation
+# Track which boss holds a captured ship (None = no captured ship)
+capturing_boss = None
+
+# Rescue animation state
+rescue_active = False
+rescue_timer = 0.0
+rescue_start_x = 0.0
+rescue_start_y = 0.0
+RESCUE_DURATION = 1.5  # seconds for ship to fly down to player
+
+
+def capture_player_ship(boss_enemy):
+    """Boss captures the player's ship."""
+    global capturing_boss
+    capturing_boss = boss_enemy
+    captured_ship_node.opacity = 1.0
+    captured_ship_node.texture = captured_tex  # red
+
+
+def release_captured_ship():
+    """Release captured ship (boss died or game reset)."""
+    global capturing_boss, rescue_active
+    capturing_boss = None
+    rescue_active = False
+    captured_ship_node.opacity = 0.0
+    captured_ship_node.position.x = -200
+    captured_ship_node.position.y = -200
+
+
+def start_rescue():
+    """Begin rescue animation — ship flies from boss position to player."""
+    global rescue_active, rescue_timer, rescue_start_x, rescue_start_y, capturing_boss
+    rescue_active = True
+    rescue_timer = 0.0
+    rescue_start_x = captured_ship_node.position.x
+    rescue_start_y = captured_ship_node.position.y
+    captured_ship_node.texture = player_tex  # back to white
+    captured_ship_node.rotation = 0
+    capturing_boss = None  # no longer held by boss
+
+
+def update_rescue(dt):
+    """Animate rescued ship flying down. Returns True when complete."""
+    global rescue_timer, rescue_active
+    if not rescue_active:
+        return False
+
+    rescue_timer += dt
+    t = min(rescue_timer / RESCUE_DURATION, 1.0)
+
+    # Fly from boss position down to wingman position beside player
+    target_x = player.position.x + WINGMAN_OFFSET_X
+    target_y = player.position.y
+    captured_ship_node.position.x = rescue_start_x + (target_x - rescue_start_x) * t
+    captured_ship_node.position.y = rescue_start_y + (target_y - rescue_start_y) * t
+    captured_ship_node.opacity = 1.0
+
+    if t >= 1.0:
+        # Rescue complete — activate dual fighter
+        rescue_active = False
+        captured_ship_node.opacity = 0.0
+        captured_ship_node.position.x = -200
+        player.rescue_ship()
+        wingman_node.opacity = 1.0
+        wingman_node.position.x = player.position.x + WINGMAN_OFFSET_X
+        wingman_node.position.y = player.position.y
+        return True
+
+    return False
+
+
+# Tractor beam — procedurally drawn fan, no sprite node
+# Beam colors (RGB565): alternating cyan/blue lines like original
+BEAM_COL_1 = const(0x07FF)  # cyan
+BEAM_COL_2 = const(0x001F)  # blue
+BEAM_COL_3 = const(0x04FF)  # teal
+
 BEAM_PHASE_INACTIVE = const(0)
-BEAM_PHASE_DIVE = const(1)
 BEAM_PHASE_EXPAND = const(2)
 BEAM_PHASE_ACTIVE = const(3)
 BEAM_PHASE_RETRACT = const(4)
+BEAM_PHASE_CAPTURE = const(5)  # ship being pulled up
+BEAM_PHASE_RETURN = const(6)   # boss flying back to formation
 
 beam_phase = BEAM_PHASE_INACTIVE
 beam_timer = 0.0
 beam_boss = None
-beam_hover_y = 30.0  # where the boss stops to hover (camera coords)
-beam_start_x = 0.0
-beam_start_y = 0.0
+beam_reveal = 0.0
+beam_capture_y = 0.0  # y position of captured ship during pull-up
 
 
 def start_beam(boss_enemy):
-    global beam_phase, beam_timer, beam_boss, beam_start_x, beam_start_y
-    # Boss is already mid-dive — stop it here and start the beam
+    global beam_phase, beam_timer, beam_boss, beam_reveal
     beam_phase = BEAM_PHASE_EXPAND
     beam_timer = 0.0
+    beam_reveal = 0.0
     beam_boss = boss_enemy
     beam_boss.dive_path = None  # stop normal dive movement
-    beam_start_x = boss_enemy.node.position.x
-    beam_start_y = boss_enemy.node.position.y
 
 
 def stop_beam():
-    global beam_phase, beam_timer, beam_boss
+    global beam_phase, beam_timer, beam_boss, beam_reveal
     beam_phase = BEAM_PHASE_INACTIVE
     beam_timer = 0.0
-    beam_node.opacity = 0.0
-    beam_node.playing = False
+    beam_reveal = 0.0
     if beam_boss is not None and beam_boss.alive:
-        # Return boss to formation
         beam_boss.in_formation = True
         beam_boss.dive_path = None
         beam_boss.node.scale.x = 1.0
     beam_boss = None
 
 
+@micropython.native
+def draw_beam_fan(fb, boss_x, boss_y, reveal):
+    """Draw a fan-shaped tractor beam from boss down to player area.
+    reveal: 0.0-1.0, how far the beam has extended (radially from boss).
+    Drawn in screen coordinates."""
+    # Convert camera to screen coords
+    cx = int(boss_x + 64)
+    cy = int(boss_y + 64) + 6  # start just below boss sprite
+
+    # Beam extends down to near player (about 50px below boss)
+    max_len = int(PLAYER_Y - boss_y)
+    beam_len = int(max_len * reveal)
+
+    if beam_len <= 0:
+        return
+
+    # Draw horizontal lines that widen as they go down (fan shape)
+    for dy in range(beam_len):
+        # Fan width grows linearly with distance
+        half_w = 2 + (dy * 10) // max_len
+        y = cy + dy
+        if y < 0 or y >= 128:
+            continue
+        # Alternate colors for the striped look
+        if dy % 3 == 0:
+            col = BEAM_COL_1
+        elif dy % 3 == 1:
+            col = BEAM_COL_2
+        else:
+            col = BEAM_COL_3
+        # Draw horizontal line
+        x_start = max(0, cx - half_w)
+        x_end = min(127, cx + half_w)
+        if x_start <= x_end:
+            fb.hline(x_start, y, x_end - x_start + 1, col)
+
+
 def update_beam(dt, player_obj, formation_obj):
-    """Update tractor beam phases. Returns True if player caught."""
-    global beam_phase, beam_timer
+    """Update tractor beam phases. Returns 'caught' if player captured."""
+    global beam_phase, beam_timer, beam_reveal, beam_capture_y
 
     if beam_phase == BEAM_PHASE_INACTIVE:
-        return False
+        return None
 
     if beam_boss is None or not beam_boss.alive:
         stop_beam()
-        return False
+        return None
 
     beam_timer += dt
-    boss_node = beam_boss.node
 
     if beam_phase == BEAM_PHASE_EXPAND:
-        # Beam revealed radially — full size sprite, no stretching
-        # Slide beam down from boss to reveal it gradually (~1.5 seconds)
-        t = min(beam_timer / 1.5, 1.0)
-        beam_node.position.x = boss_node.position.x
-        # Start with beam centered on boss (hidden behind it), slide down
-        beam_node.position.y = boss_node.position.y + 4 + t * 14
-        beam_node.opacity = t
-        beam_node.playing = True
-        beam_node.scale.x = 1.0  # never stretch
-        beam_node.scale.y = 1.0
-
-        if t >= 1.0:
+        # Beam grows radially from boss toward player (~1.5 seconds)
+        beam_reveal = min(beam_timer / 1.5, 1.0)
+        if beam_reveal >= 1.0:
             beam_phase = BEAM_PHASE_ACTIVE
             beam_timer = 0.0
-            beam_node.opacity = 1.0
 
     elif beam_phase == BEAM_PHASE_ACTIVE:
-        # Beam fully active — check for player capture (~2 seconds)
-        beam_node.position.x = boss_node.position.x
-        beam_node.position.y = boss_node.position.y + 18
-
+        # Beam fully extended — check for capture (~2 seconds)
+        beam_reveal = 1.0
         if beam_timer >= 2.0:
             beam_phase = BEAM_PHASE_RETRACT
             beam_timer = 0.0
         elif player_obj.alive and not player_obj.is_invincible():
-            dx = abs(player_obj.position.x - boss_node.position.x)
-            dy = player_obj.position.y - boss_node.position.y
-            if dx < 12 and dy > 0 and dy < 35:
-                stop_beam()
-                return True  # caught!
+            bx = beam_boss.node.position.x
+            by = beam_boss.node.position.y
+            dx = abs(player_obj.position.x - bx)
+            dy = player_obj.position.y - by
+            max_len = PLAYER_Y - by
+            if max_len > 0:
+                fan_half_w = 2 + (dy * 10) // max_len
+            else:
+                fan_half_w = 12
+            if dx < fan_half_w + 4 and dy > 0 and dy < max_len + 5:
+                # Start capture animation — ship gets pulled up
+                beam_phase = BEAM_PHASE_CAPTURE
+                beam_timer = 0.0
+                beam_capture_y = player_obj.position.y
+                # Show captured ship node (red color — use row 1)
+                captured_ship_node.opacity = 1.0
+                captured_ship_node.position.x = beam_boss.node.position.x
+                captured_ship_node.position.y = beam_capture_y
+                # Hide the real player
+                player_obj.alive = False
+                player_obj.opacity = 0.0
+                return 'caught'
 
-    elif beam_phase == BEAM_PHASE_RETRACT:
-        # Beam fades out (~0.4 seconds), no stretching
-        t = min(beam_timer / 0.4, 1.0)
-        beam_node.opacity = 1.0 - t
+    elif beam_phase == BEAM_PHASE_CAPTURE:
+        # Captured ship rotates and gets pulled UP to boss (~1.5 seconds)
+        t = min(beam_timer / 1.5, 1.0)
+        boss_y = beam_boss.node.position.y
+        # Ship moves from player level up to ABOVE boss
+        target_y = boss_y - 12  # held above the boss
+        captured_ship_node.position.y = beam_capture_y + (target_y - beam_capture_y) * t
+        captured_ship_node.position.x = beam_boss.node.position.x
+        # Rotate as it goes up
+        captured_ship_node.rotation = t * 6.28 * 2  # two full rotations
 
         if t >= 1.0:
-            beam_node.opacity = 0.0
-            beam_node.playing = False
-            # Boss flies back up to formation
+            # Ship is now held by boss
+            captured_ship_node.rotation = 0
+            capture_player_ship(beam_boss)
+            beam_phase = BEAM_PHASE_RETURN
             beam_timer = 0.0
-            # Snap back to formation slot
+            beam_reveal = 0.0
+
+    elif beam_phase == BEAM_PHASE_RETRACT:
+        # No capture — beam shrinks back (~0.5 seconds)
+        beam_reveal = max(0, 1.0 - beam_timer / 0.5)
+        if beam_reveal <= 0:
+            beam_phase = BEAM_PHASE_RETURN
+            beam_timer = 0.0
+
+    elif beam_phase == BEAM_PHASE_RETURN:
+        # Boss flies OFF SCREEN upward (~1.5 seconds), then respawns in formation
+        t = min(beam_timer / 1.5, 1.0)
+        # Fly upward off screen
+        beam_boss.node.position.y -= 80 * dt
+        # Move captured ship with boss (held above)
+        if capturing_boss is beam_boss:
+            captured_ship_node.position.x = beam_boss.node.position.x
+            captured_ship_node.position.y = beam_boss.node.position.y - 12
+
+        if beam_boss.node.position.y < -70:
+            # Off screen — snap back to formation
             sx, sy = formation_obj.get_slot_screen_pos(
                 beam_boss.slot_col, beam_boss.slot_row)
-            boss_node.position.x = sx
-            boss_node.position.y = sy
+            beam_boss.node.position.x = sx
+            beam_boss.node.position.y = sy
+            beam_boss.in_formation = True
+            # Captured ship stays with boss in formation
+            if capturing_boss is beam_boss:
+                captured_ship_node.position.x = sx
+                captured_ship_node.position.y = sy - 12
             stop_beam()
 
-    return False
+    return None
 
 
 # ── Initialize game systems ────────────────────────────────
 formation = Formation()
 bullets = BulletManager()
+# Load bullet sprite texture
+try:
+    _bullet_tex = TextureResource("assets/bullets.bmp")
+    bullets.set_texture(_bullet_tex)
+except:
+    pass
 stars = Starfield(18)
 explosions = ExplosionManager(explosion_nodes)
 hud = HUD()
 level = LevelData()
+transforms = TransformManager()
+popups = ScorePopups()
 
+# Extra life tracking
+EXTRA_LIFE_FIRST = const(20000)
+EXTRA_LIFE_INTERVAL = const(70000)
+next_extra_life = EXTRA_LIFE_FIRST
+
+# Remove logo after loading
+if _logo_node:
+    _logo_node.mark_destroy()
+    _logo_node = None
 gc.collect()
 
 # ── Idle animation timer ───────────────────────────────────
@@ -318,13 +528,16 @@ def play_sfx(sfx, channel):
         engine_audio.play(sfx, channel, False)
 
 
-def get_transform_type(stage):
-    """Get which transform enemy type to use for this stage, or None."""
-    result = None
-    for min_stage, etype in TRANSFORM_STAGES:
-        if stage >= min_stage:
-            result = etype
-    return result
+def check_extra_life():
+    """Award extra life at score thresholds."""
+    global next_extra_life
+    if hud.score >= next_extra_life:
+        hud.lives += 1
+        play_sfx(extra_life_sfx, CH_MUSIC)
+        if next_extra_life == EXTRA_LIFE_FIRST:
+            next_extra_life = EXTRA_LIFE_FIRST + EXTRA_LIFE_INTERVAL
+        else:
+            next_extra_life += EXTRA_LIFE_INTERVAL
 
 
 def start_stage():
@@ -332,8 +545,7 @@ def start_stage():
     formation.reset()
     bullets.clear_all()
     stop_beam()
-
-    transform = get_transform_type(hud.stage)
+    transforms.reset()
 
     for row in range(FORM_ROWS):
         if row == 0:
@@ -347,17 +559,9 @@ def start_stage():
             if row == 0 and (col < 2 or col > 5):
                 continue
 
-            # Replace some bees with transform enemies in later stages
-            actual_type = etype
-            if transform is not None and etype == ENEMY_BEE:
-                # Replace corner bees with transform enemies
-                if (row == 4 and (col == 0 or col == 7)) or \
-                   (row == 3 and (col == 0 or col == 7)):
-                    actual_type = transform
-
             idx = row * FORM_COLS + col
             e = Enemy()
-            e.init_for_stage(actual_type, col, row, enemy_nodes[idx])
+            e.init_for_stage(etype, col, row, enemy_nodes[idx])
             formation.set_enemy(col, row, e)
 
     formation.count_alive()
@@ -375,14 +579,20 @@ def hide_all_enemies():
 
 def reset_game():
     """Reset for new game."""
+    global next_extra_life
     hud.reset()
     hide_all_enemies()
     player.reset()
+    wingman_node.opacity = 0.0
     bullets.clear_all()
+    transforms.reset()
+    stop_beam()
+    release_captured_ship()
+    next_extra_life = EXTRA_LIFE_FIRST
 
 
 @micropython.native
-def maybe_enemy_fire(enemy, bullets_mgr, level_data):
+def maybe_enemy_fire(enemy, bullets_mgr, level_data, player_x=0.0):
     """Check if a diving enemy should fire."""
     if random.random() < level_data.enemy_fire_chance:
         active_count = 0
@@ -391,7 +601,8 @@ def maybe_enemy_fire(enemy, bullets_mgr, level_data):
                 active_count += 1
         if active_count < level_data.max_enemy_bullets:
             bullets_mgr.fire_enemy(enemy.node.position.x,
-                                    enemy.node.position.y)
+                                    enemy.node.position.y, player_x)
+            play_sfx(enemy_shot_sfx, CH_EXPLODE)
 
 
 # ── Main loop ──────────────────────────────────────────────
@@ -424,6 +635,7 @@ while True:
                 reset_game()
                 state = ST_STAGE_INTRO
                 state_timer = 1.5
+                play_sfx(level_start_sfx, CH_MUSIC)
 
         # ────────────────────────────────────────────────────
         # STATE: STAGE INTRO
@@ -478,9 +690,10 @@ while True:
                 bullets.p_active[bi] = False
                 e.hp -= 1
                 if e.hp <= 0:
+                    e.flash_hit()
                     explosions.spawn(e.node.position.x, e.node.position.y)
                     play_sfx(explode_sfx, CH_EXPLODE)
-                    pts = POINTS[e.type][0]
+                    pts = POINTS[min(e.type, len(POINTS)-1)][0]
                     hud.add_score(pts)
                     e.kill()
                     formation.count_alive()
@@ -497,16 +710,35 @@ while True:
             player.update(dt, engine_io.LEFT.is_pressed,
                          engine_io.RIGHT.is_pressed)
 
-            if engine_io.A.is_just_pressed:
-                if bullets.fire_player(player.position.x, player.position.y):
+            # Wingman follows player
+            if player.dual_fighter:
+                wingman_node.position.x = player.position.x + WINGMAN_OFFSET_X
+                wingman_node.position.y = player.position.y
+
+            if engine_io.A.is_just_pressed and player.alive:
+                fired = False
+                if player.dual_fighter:
+                    # Dual fighter: both ships fire together
+                    fired = bullets.fire_player(player.position.x, player.position.y)
+                    bullets.fire_player(player.position.x + WINGMAN_OFFSET_X, player.position.y)
+                else:
+                    fired = bullets.fire_player(player.position.x, player.position.y)
+                if fired:
                     play_sfx(shoot_sfx, CH_SHOOT)
 
             # Formation movement
             formation.update(dt)
             update_enemy_frames(formation, dt)
 
+            # Update captured ship position (follows its boss)
+            if capturing_boss is not None and capturing_boss.alive:
+                captured_ship_node.position.x = capturing_boss.node.position.x
+                captured_ship_node.position.y = capturing_boss.node.position.y - 12
+
             # Trigger dive attacks
-            maybe_trigger_dive(formation, level, dt)
+            diver = maybe_trigger_dive(formation, level, dt)
+            if diver is not None:
+                play_sfx(dive_sfx, CH_SHOOT)  # reuse channel for dive swoosh
 
             # Update diving enemies
             for e in formation.enemies:
@@ -517,31 +749,23 @@ while True:
                     if not done:
                         is_boss = e.type == ENEMY_BOSS or e.type == ENEMY_BOSS_HIT
                         if is_boss and beam_phase == BEAM_PHASE_INACTIVE \
-                           and e.dive_t > 0.2 and e.dive_t < 0.5 \
-                           and e.node.position.y < 15 \
-                           and random.random() < 0.15:
+                           and e.node.position.y > 10 and e.node.position.y < 30 \
+                           and random.random() < 0.12:
                             # Boss stops mid-dive to fire tractor beam
                             start_beam(e)
+                            play_sfx(beam_sfx, CH_MUSIC)
                         elif not is_boss:
                             # Only non-boss enemies fire bullets
-                            maybe_enemy_fire(e, bullets, level)
+                            maybe_enemy_fire(e, bullets, level, player.position.x)
 
             # Update tractor beam
             if beam_phase != BEAM_PHASE_INACTIVE:
-                caught = update_beam(dt, player, formation)
-                if caught:
-                    # Player caught by beam — lose a life
+                result = update_beam(dt, player, formation)
+                if result == 'caught':
+                    play_sfx(capture_sfx, CH_PLAYER_DIE)
+                    # Player caught — enter dying state (capture animation runs in beam)
                     state = ST_DYING
-                    state_timer = 1.5
-                    player.alive = False
-                    player.opacity = 0.0
-                    player_exp_node.position.x = player.position.x
-                    player_exp_node.position.y = player.position.y
-                    player_exp_node.opacity = 1.0
-                    player_exp_node.frame_current_x = 0
-                    player_exp_node.playing = True
-                    play_sfx(die_sfx, CH_PLAYER_DIE)
-                    stop_beam()
+                    state_timer = 2.5  # longer to allow capture animation
 
             # Update bullets
             bullets.update(dt)
@@ -554,16 +778,33 @@ while True:
                 e.hp -= 1
                 if e.hp <= 0:
                     diving = not e.in_formation
+                    # Flash dying palette then explode
+                    e.flash_hit()
                     explosions.spawn(e.node.position.x, e.node.position.y)
                     play_sfx(explode_sfx, CH_EXPLODE)
-                    pts = POINTS[e.type][1 if diving else 0]
+                    # Boss convoy scoring
+                    is_boss = e.type == ENEMY_BOSS or e.type == ENEMY_BOSS_HIT
+                    if is_boss and diving and len(e.escorts) > 0:
+                        pts = 800 if len(e.escorts) == 1 else 1600
+                        popups.spawn(pts, e.node.position.x, e.node.position.y)
+                    elif is_boss and diving:
+                        pts = 400
+                        popups.spawn(pts, e.node.position.x, e.node.position.y)
+                    else:
+                        pts = POINTS[min(e.type, len(POINTS)-1)][1 if diving else 0]
                     hud.add_score(pts)
+                    if is_boss and capturing_boss is e and diving:
+                        start_rescue()
+                        play_sfx(rescue_sfx, CH_MUSIC)
+                    elif is_boss and capturing_boss is e and not diving:
+                        release_captured_ship()
                     e.kill()
                     formation.count_alive()
                 else:
                     # Boss hit but not dead — switch to hit sprite
                     if e.type == ENEMY_BOSS:
                         e.node.frame_current_y = ENEMY_BOSS_HIT
+                        e.type = ENEMY_BOSS_HIT
 
             # Enemy bullets vs player
             hit_idx = check_enemy_bullets_vs_player(bullets, player)
@@ -573,6 +814,7 @@ while True:
                 state_timer = 1.5
                 player.alive = False
                 player.opacity = 0.0
+                wingman_node.opacity = 0.0
                 player_exp_node.position.x = player.position.x
                 player_exp_node.position.y = player.position.y
                 player_exp_node.opacity = 1.0
@@ -599,8 +841,63 @@ while True:
                     play_sfx(die_sfx, CH_PLAYER_DIE)
                     stop_beam()
 
-            # Check stage clear
-            if formation.alive_count <= 0:
+            # Transform enemies — bee morphs into group of 3
+            morphed = transforms.try_morph(formation, hud.stage,
+                                           enemy_nodes, dt)
+            if morphed:
+                play_sfx(transform_sfx, CH_EXPLODE)
+
+            # Update transform groups (they fly through and exit)
+            transforms.update(dt, lambda x, y: bullets.fire_enemy(x, y, player.position.x))
+
+            # Check player bullets vs transform enemies
+            if state == ST_PLAYING:
+                for bi in range(MAX_PLAYER_BULLETS):
+                    if not bullets.p_active[bi]:
+                        continue
+                    hit = transforms.check_bullet_hit(
+                        bullets.p_x[bi], bullets.p_y[bi])
+                    if hit:
+                        g, idx = hit
+                        bullets.p_active[bi] = False
+                        ex = g.enemies[idx][0].position.x
+                        ey = g.enemies[idx][0].position.y
+                        transforms.kill_enemy(g, idx)
+                        explosions.spawn(ex, ey)
+                        play_sfx(explode_sfx, CH_EXPLODE)
+                        hud.add_score(TRANSFORM_INDIVIDUAL_PTS)
+                        # Bonus if all 3 killed
+                        if g.kills >= 3:
+                            hud.add_score(g.bonus)
+                            popups.spawn(g.bonus, ex, ey)
+
+            # Transform enemies body-to-body with player
+            if state == ST_PLAYING and player.alive and not player.is_invincible():
+                t_hit = transforms.check_player_collision(
+                    player.position.x, player.position.y)
+                if t_hit:
+                    g, idx = t_hit
+                    ex = g.enemies[idx][0].position.x
+                    ey = g.enemies[idx][0].position.y
+                    transforms.kill_enemy(g, idx)
+                    explosions.spawn(ex, ey)
+                    state = ST_DYING
+                    state_timer = 1.5
+                    player.alive = False
+                    player.opacity = 0.0
+                    player_exp_node.position.x = player.position.x
+                    player_exp_node.position.y = player.position.y
+                    player_exp_node.opacity = 1.0
+                    player_exp_node.frame_current_x = 0
+                    player_exp_node.playing = True
+                    play_sfx(die_sfx, CH_PLAYER_DIE)
+                    stop_beam()
+
+            # Extra life check
+            check_extra_life()
+
+            # Check stage clear (no formation enemies AND no active transforms)
+            if formation.alive_count <= 0 and len(transforms.groups) == 0:
                 state = ST_STAGE_CLEAR
                 state_timer = 1.5
                 stop_beam()
@@ -608,6 +905,9 @@ while True:
 
             # Draw
             bullets.draw(fb)
+            if beam_phase != BEAM_PHASE_INACTIVE and beam_boss is not None:
+                draw_beam_fan(fb, beam_boss.node.position.x,
+                             beam_boss.node.position.y, beam_reveal)
             explosions.update(dt)
             hud.draw(fb)
 
@@ -626,11 +926,16 @@ while True:
             done = update_challenge(challenge_state, dt)
             if done:
                 state = ST_STAGE_CLEAR
-                state_timer = 2.0
-                # Perfect bonus
+                state_timer = 3.0  # longer to show results
                 if challenge_state.kills >= CHALLENGE_TOTAL:
                     hud.add_score(CHALLENGE_PERFECT_BONUS)
-                    hud.draw_centered_text("PERFECT!", 45)
+                    play_sfx(challenge_perfect_sfx, CH_MUSIC)
+                    popups.spawn("PERFECT!", 0, -10)
+                    popups.spawn(CHALLENGE_PERFECT_BONUS, 0, 0)
+                else:
+                    play_sfx(challenge_over_sfx, CH_MUSIC)
+                # Show hit results
+                popups.spawn("HITS:" + str(challenge_state.kills), 0, 10)
 
             bullets.update(dt)
 
@@ -653,7 +958,15 @@ while True:
                         explosions.spawn(ex, ey)
                         play_sfx(explode_sfx, CH_EXPLODE)
                         challenge_state.kills += 1
+                        challenge_state.wave_kills[ce.wave_idx] += 1
                         hud.add_score(CHALLENGE_HIT_POINTS)
+                        # Check if entire wave of 8 is cleared
+                        if challenge_state.wave_kills[ce.wave_idx] >= CHALLENGE_ENEMIES_PER_WAVE \
+                           and not challenge_state.wave_done[ce.wave_idx]:
+                            challenge_state.wave_done[ce.wave_idx] = True
+                            wave_bonus = 1000
+                            hud.add_score(wave_bonus)
+                            popups.spawn(wave_bonus, ex, ey)
                         break
 
             bullets.draw(fb)
@@ -661,7 +974,7 @@ while True:
             hud.draw(fb)
 
             # Show kills counter
-            hud.draw_centered_text(str(challenge_state.kills) + "/" + str(CHALLENGE_TOTAL), 110)
+            # Per-wave bonus popups handled by challenge update
 
         # ────────────────────────────────────────────────────
         # STATE: DYING (player death animation)
@@ -673,14 +986,32 @@ while True:
             bullets.update(dt)
             explosions.update(dt)
 
-            # Player explosion fades
+            # Continue beam animation (capture pull-up and return)
+            if beam_phase != BEAM_PHASE_INACTIVE:
+                update_beam(dt, player, formation)
+
+            # Update captured ship position (follows boss)
+            if capturing_boss is not None and capturing_boss.alive:
+                captured_ship_node.position.x = capturing_boss.node.position.x
+                captured_ship_node.position.y = capturing_boss.node.position.y - 12
+
+            # Player explosion fades (only if not a beam capture)
             if player_exp_node.opacity > 0:
                 player_exp_node.opacity = max(0, state_timer / 1.5)
                 if state_timer <= 0.5:
                     player_exp_node.opacity = 0.0
 
+            # Draw
             bullets.draw(fb)
+            if beam_phase != BEAM_PHASE_INACTIVE and beam_boss is not None:
+                draw_beam_fan(fb, beam_boss.node.position.x,
+                             beam_boss.node.position.y, beam_reveal)
             hud.draw(fb)
+
+            # Show "FIGHTER CAPTURED" during capture phase
+            if beam_phase == BEAM_PHASE_CAPTURE or \
+               (beam_phase == BEAM_PHASE_RETURN and capturing_boss is not None):
+                hud.draw_centered_text("FIGHTER CAPTURED", 55)
 
             if state_timer <= 0:
                 player_exp_node.opacity = 0.0
@@ -691,14 +1022,17 @@ while True:
                     hide_all_enemies()
                     bullets.clear_all()
                     stop_beam()
+                    release_captured_ship()
                 else:
                     player.reset()
                     bullets.clear_all()
                     # Return all diving enemies to formation
                     for e in formation.enemies:
-                        if e is not None and e.alive and not e.in_formation:
+                        if e is not None and e.alive and not e.in_formation \
+                           and e is not beam_boss:
                             e.in_formation = True
                             e.dive_path = None
+                            e.escorts = []
                             sx, sy = formation.get_slot_screen_pos(
                                 e.slot_col, e.slot_row)
                             e.node.position.x = sx
@@ -718,6 +1052,7 @@ while True:
                 hud.stage += 1
                 state = ST_STAGE_INTRO
                 state_timer = 1.5
+                play_sfx(level_start_sfx, CH_MUSIC)
 
         # ────────────────────────────────────────────────────
         # STATE: GAME OVER
@@ -732,6 +1067,19 @@ while True:
             if state_timer <= 0 and engine_io.A.is_just_pressed:
                 hide_all_enemies()
                 state = ST_TITLE
+
+        # ── Always draw popups ──
+        popups.update_and_draw(dt)
+
+        # ── Always update rescue animation and wingman position ──
+        if rescue_active:
+            update_rescue(dt)
+        if player.dual_fighter and player.alive and player.opacity > 0:
+            wingman_node.position.x = player.position.x + WINGMAN_OFFSET_X
+            wingman_node.position.y = player.position.y
+            wingman_node.opacity = player.opacity  # match player (blink together)
+        elif not player.alive or not player.dual_fighter:
+            wingman_node.opacity = 0.0
 
         # ── Per-frame cleanup ──
         gc.collect()

@@ -20,18 +20,52 @@ ENEMY_SCORPION = const(4)
 ENEMY_BOSCONIAN = const(5)
 ENEMY_GALAXIAN = const(6)
 ENEMY_DRAGONFLY = const(7)
-NUM_ENEMY_TYPES = const(8)
+ENEMY_SATELLITE = const(8)
+ENEMY_ENTERPRISE = const(9)
+# Hit/dying palette versions (brief flash before explosion)
+ENEMY_BOSS_DYING = const(10)
+ENEMY_BEE_DYING = const(11)
+ENEMY_BUTTERFLY_DYING = const(12)
+ENEMY_SCORPION_DYING = const(13)
+ENEMY_BOSCONIAN_DYING = const(14)
+ENEMY_GALAXIAN_DYING = const(15)
+ENEMY_DRAGONFLY_DYING = const(16)
+ENEMY_ENTERPRISE_DYING = const(17)
+ENEMY_SATELLITE_DYING = const(18)
+ENEMY_PRETRANSFORM = const(19)  # pulsating bee before morphing
+NUM_ENEMY_TYPES = const(20)
 
 # Points: (in_formation, diving)
 POINTS_BEE = (50, 100)
 POINTS_BUTTERFLY = (80, 160)
 POINTS_BOSS = (150, 400)
 POINTS_TRANSFORM = (150, 300)  # scorpion, bosconian, galaxian, dragonfly
+POINTS_CHALLENGE = (100, 100)  # challenge-exclusive enemies
 POINTS = (POINTS_BEE, POINTS_BUTTERFLY, POINTS_BOSS, POINTS_BOSS,
-          POINTS_TRANSFORM, POINTS_TRANSFORM, POINTS_TRANSFORM, POINTS_TRANSFORM)
+          POINTS_TRANSFORM, POINTS_TRANSFORM, POINTS_TRANSFORM, POINTS_TRANSFORM,
+          POINTS_CHALLENGE, POINTS_CHALLENGE,
+          POINTS_BOSS, POINTS_BEE, POINTS_BUTTERFLY,  # dying versions (same pts)
+          POINTS_TRANSFORM, POINTS_TRANSFORM, POINTS_TRANSFORM,
+          POINTS_CHALLENGE, POINTS_CHALLENGE, POINTS_CHALLENGE,
+          POINTS_BEE)  # pretransform
 
 # Enemy HP by type
-ENEMY_HP = (1, 1, 2, 1, 1, 1, 2, 1)
+ENEMY_HP = (1, 1, 2, 1, 1, 1, 2, 1, 1, 1,
+            1, 1, 1, 1, 1, 1, 1, 1, 1, 1)
+
+# Map normal enemy type to its dying palette version
+DYING_PALETTE = {
+    ENEMY_BEE: ENEMY_BEE_DYING,
+    ENEMY_BUTTERFLY: ENEMY_BUTTERFLY_DYING,
+    ENEMY_BOSS: ENEMY_BOSS_DYING,
+    ENEMY_BOSS_HIT: ENEMY_BOSS_DYING,
+    ENEMY_SCORPION: ENEMY_SCORPION_DYING,
+    ENEMY_BOSCONIAN: ENEMY_BOSCONIAN_DYING,
+    ENEMY_GALAXIAN: ENEMY_GALAXIAN_DYING,
+    ENEMY_DRAGONFLY: ENEMY_DRAGONFLY_DYING,
+    ENEMY_SATELLITE: ENEMY_SATELLITE_DYING,
+    ENEMY_ENTERPRISE: ENEMY_ENTERPRISE_DYING,
+}
 
 # Transform enemy appearance by stage range
 # (min_stage, enemy_type) — which transform enemy appears
@@ -55,7 +89,7 @@ PLAYER_SPEED = 80.0          # pixels/sec
 PLAYER_START_X = 0            # center of screen
 
 # Bullets
-MAX_PLAYER_BULLETS = const(2)
+MAX_PLAYER_BULLETS = const(4)  # 2 normally, need 4 for dual fighter
 MAX_ENEMY_BULLETS = const(8)
 PLAYER_BULLET_SPEED = 150.0
 ENEMY_BULLET_SPEED = 60.0

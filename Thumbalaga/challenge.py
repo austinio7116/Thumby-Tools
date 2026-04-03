@@ -105,7 +105,7 @@ CHALLENGE_HIT_POINTS = const(100)
 
 class ChallengeWaveEnemy:
     """A single enemy in a challenge wave."""
-    __slots__ = ('node', 'path', 'start_time', 'active', 'alive', 'finished')
+    __slots__ = ('node', 'path', 'start_time', 'active', 'alive', 'finished', 'wave_idx')
 
     def __init__(self):
         self.node = None
@@ -114,6 +114,7 @@ class ChallengeWaveEnemy:
         self.active = False
         self.alive = True
         self.finished = False
+        self.wave_idx = 0
 
 
 class ChallengeState:
@@ -121,6 +122,8 @@ class ChallengeState:
 
     def __init__(self):
         self.enemies = []
+        self.wave_kills = [0] * CHALLENGE_WAVE_COUNT
+        self.wave_done = [False] * CHALLENGE_WAVE_COUNT
         self.time = 0.0
         self.kills = 0
         self.total_spawned = 0
@@ -133,11 +136,19 @@ class ChallengeState:
         self.kills = 0
         self.total_spawned = 0
         self.all_done = False
+        self.wave_kills = [0] * CHALLENGE_WAVE_COUNT
+        self.wave_done = [False] * CHALLENGE_WAVE_COUNT
+
+        # Each wave uses the same enemy type — challenge-exclusive enemies
+        # Dragonfly, Satellite, Enterprise cycle, plus Bee and Butterfly
+        wave_types = [ENEMY_DRAGONFLY, ENEMY_SATELLITE, ENEMY_ENTERPRISE,
+                      ENEMY_DRAGONFLY, ENEMY_SATELLITE]
 
         node_idx = 0
         for wave_idx in range(CHALLENGE_WAVE_COUNT):
             path = ALL_WAVE_PATHS[wave_idx % len(ALL_WAVE_PATHS)]
             wave_start = wave_idx * CHALLENGE_WAVE_DELAY
+            wave_enemy_type = wave_types[wave_idx % len(wave_types)]
 
             for i in range(CHALLENGE_ENEMIES_PER_WAVE):
                 if node_idx >= len(enemy_nodes):
@@ -149,9 +160,12 @@ class ChallengeState:
                 ce.active = False
                 ce.alive = True
                 ce.finished = False
+                ce.wave_idx = wave_idx
 
-                # Set random enemy appearance
-                ce.node.frame_current_y = node_idx % 3
+                # All enemies in this wave are the same type
+                ce.node.frame_current_y = wave_enemy_type
+                ce.node.frame_current_x = IDLE_FRAME_A
+                ce.node.playing = False
                 ce.node.opacity = 0.0
                 ce.node.position.x = -200
                 ce.node.position.y = -200
