@@ -1,13 +1,17 @@
 #!/bin/bash
 # Deploy a game folder to Thumby Color via mpremote
-# Usage: ./deploy.sh <GameFolder> [device]
+# Usage: ./deploy.sh <GameName> [device]
 # Example: ./deploy.sh Thumbalaga
 #          ./deploy.sh Thumbalaga /dev/ttyACM1
+#
+# Looks for the game in TinyCircuits-Thumby-Color-Games/<GameName>/
 
 set -e
 
-GAME="${1:?Usage: ./deploy.sh <GameFolder> [device]}"
+GAMES_DIR="/home/maustin/thumby-color/TinyCircuits-Thumby-Color-Games"
+GAME_NAME="${1:?Usage: ./deploy.sh <GameName> [device]}"
 DEV="${2:-/dev/ttyACM0}"
+GAME="$GAMES_DIR/$GAME_NAME"
 
 if [ ! -d "$GAME" ]; then
     echo "Error: Game folder '$GAME' not found"
@@ -23,14 +27,12 @@ if [ ! -e "$DEV" ]; then
     exit 1
 fi
 
-GAME_NAME=$(basename "$GAME")
 echo "=== Deploying $GAME_NAME to $DEV ==="
 
 # Create directories
 echo "Creating directories..."
 mpremote connect "$DEV" mkdir ":Games/$GAME_NAME" 2>/dev/null || true
 
-# Find and create subdirectories
 find "$GAME" -type d | while read -r dir; do
     rel="${dir#$GAME}"
     if [ -n "$rel" ]; then

@@ -1,12 +1,20 @@
 #!/bin/bash
 # Run a game in the Linux SDL2 emulator
-# Usage: ./run_emulator.sh <GameFolder>
+# Usage: ./run_emulator.sh <GameName>
 # Example: ./run_emulator.sh Thumbalaga
+#
+# Looks for the game in TinyCircuits-Thumby-Color-Games/<GameName>/
 
 set -e
 
-GAME="${1:?Usage: ./run_emulator.sh <GameFolder>}"
-GAME_NAME=$(basename "$GAME")
+GAMES_DIR="/home/maustin/thumby-color/TinyCircuits-Thumby-Color-Games"
+GAME_NAME="${1:?Usage: ./run_emulator.sh <GameName>}"
+GAME="$GAMES_DIR/$GAME_NAME"
+
+if [ ! -d "$GAME" ]; then
+    echo "Error: Game folder '$GAME' not found"
+    exit 1
+fi
 
 MP="/home/maustin/mp-thumby"
 ENGINE="$MP/TinyCircuits-Tiny-Game-Engine"
