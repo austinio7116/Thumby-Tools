@@ -89,9 +89,9 @@ async function buf(v, p, t) {
   if (!cache[k]) cache[k] = fetch(k + ".wav").then(r => r.arrayBuffer()).then(a => ctx.decodeAudioData(a));
   return cache[k];
 }
-// join pieces: each [piece, gap ms before it]; a short crossfade where the gap is 0
-async function play(parts, text) {
-  if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+// join pieces: each [piece, gap ms before it]; a short crossfade where the gap is 0.
+// Each piece carries its own pause (cut inside the break that followed it).
+async function assemble(parts) {
   const bs = await Promise.all(parts.map(([p]) => buf(voice, p, take(voice, p))));
   const sr = bs[0].sampleRate, xf = Math.round(sr * 0.008);
   let len = 0;
@@ -109,19 +109,29 @@ async function play(parts, text) {
     }
     at += d.length;
   });
+  return out;
+}
+// ONE SOUND AT A TIME: whatever is playing stops before the next starts
+let cur = null;
+function playBuf(out, text) {
+  if (cur) { try { cur.onended = null; cur.stop(); } catch (e) {} }
   const src = ctx.createBufferSource(); src.buffer = out; src.connect(ctx.destination); src.start();
+  cur = src;
   document.getElementById("said").textContent = text;
-  return new Promise(r => src.onended = r);
+}
+async function play(parts, text) {
+  if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+  playBuf(await assemble(parts), text);
 }
 const rnd = n => 1 + Math.floor(Math.random() * n);
 function pair() { let a = rnd(8), b = rnd(8); while (b === a) b = rnd(8); return a < b ? [a, b] : [b, a]; }
 const cap = s => s[0].toUpperCase() + s.slice(1);
 function matchCall() { const [a, b] = pair(), t = rnd(4);
-  return [[["open_" + a, 0], ["second_" + b, 0], ["table_" + t, 200]], `Player ${NUM[a]} and player ${NUM[b]}, to table ${NUM[t]}.`]; }
+  return [[["open_" + a, 0], ["second_" + b, 0], ["table_" + t, 0]], `Player ${NUM[a]} and player ${NUM[b]}, to table ${NUM[t]}.`]; }
 function finalCall() { const [a, b] = pair();
-  return [[["lead_final", 0], ["open_" + a, 250], ["second_" + b, 0], ["table_1", 200]], `The final: player ${NUM[a]} and player ${NUM[b]}, to table one.`]; }
-function woCall() { const a = rnd(8); return [[["open_" + a, 0], ["walkover", 40]], `Player ${NUM[a]} has a walkover.`]; }
-function champCall() { const a = rnd(8); return [[["lead_champion", 0], ["close_" + a, 60]], `Your tournament champion is player ${NUM[a]}.`]; }
+  return [[["lead_final", 0], ["open_" + a, 0], ["second_" + b, 0], ["table_1", 0]], `The final: player ${NUM[a]} and player ${NUM[b]}, to table one.`]; }
+function woCall() { const a = rnd(8); return [[["open_" + a, 0], ["walkover", 0]], `Player ${NUM[a]} has a walkover.`]; }
+function champCall() { const a = rnd(8); return [[["lead_champion", 0], ["close_" + a, 0]], `Your tournament champion is player ${NUM[a]}.`]; }
 const go = f => () => { const [p, t] = f(); play(p, t); };
 document.getElementById("c-match").onclick = go(matchCall);
 document.getElementById("c-final").onclick = go(finalCall);
@@ -130,9 +140,18 @@ document.getElementById("c-champ").onclick = go(champCall);
 document.getElementById("c-open").onclick = () => play([["fixed_open", 0]], "The tournament room is open.");
 document.getElementById("c-begin").onclick = () => play([["fixed_five", 0]], "The tournament begins in five minutes.");
 document.getElementById("c-draw").onclick = () => play([["fixed_draw", 0]], "The draw has been made.");
+// FIVE IN A ROW: built as one sound, 1.2 s between calls, so they cannot overlap
 document.getElementById("c-five").onclick = async () => {
-  for (let i = 0; i < 5; i++) { const [p, t] = [matchCall, matchCall, finalCall, woCall, champCall][i](); await play(p, t);
-    await new Promise(r => setTimeout(r, 700)); } };
+  if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const calls = [matchCall(), matchCall(), finalCall(), woCall(), champCall()];
+  const bufs = [];
+  for (const [p] of calls) bufs.push(await assemble(p));
+  const sr = bufs[0].sampleRate, gap = Math.round(sr * 1.2);
+  const out = ctx.createBuffer(1, bufs.reduce((n, b) => n + b.length + gap, 0), sr), o = out.getChannelData(0);
+  let at = 0;
+  bufs.forEach(b => { o.set(b.getChannelData(0), at); at += b.length + gap; });
+  playBuf(out, calls.map(c => c[1]).join("  /  "));
+};
 
 function savePicks() {
   try { localStorage.setItem("tourn_picks", JSON.stringify(picks)); } catch (e) {}
