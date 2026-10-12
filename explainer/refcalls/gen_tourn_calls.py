@@ -233,14 +233,20 @@ def main():
                 dst = os.path.join(OUT, f"{name}_t{take}.wav")
                 pending.append((dst, g, f"{name}_t{take}", {"from": s["key"], "seed": seed, "heard": heard,
                                                             "sec": round(g.shape[-1] / GAME_RATE, 3)}))
-            if fails == 0 or attempt == TRIES - 1:
+            # EVERY PIECE THAT CUT IS KEPT AT ONCE (Mark: no wasted takes): a
+            # good "Player fifteen" was thrown away five times because the
+            # other piece of its sentence had no pause. A piece already made
+            # is never replaced; the sentence is tried again only for what is
+            # still missing.
+            if pending:
                 os.makedirs(os.path.join(OUT, "raw"), exist_ok=True)
-                torchaudio.save(os.path.join(OUT, "raw", f"{s['key']}_t{take}.wav"), w.unsqueeze(0), sr, encoding="PCM_S", bits_per_sample=16)
-                for dst, g, key, ent in pending:
-                    if os.path.exists(dst):         # a piece already made is kept: only gaps are filled
-                        continue
-                    torchaudio.save(dst, g, GAME_RATE, encoding="PCM_S", bits_per_sample=16)
-                    log[key] = ent
+                torchaudio.save(os.path.join(OUT, "raw", f"{s['key']}_t{take}_a{attempt}.wav"), w.unsqueeze(0), sr, encoding="PCM_S", bits_per_sample=16)
+            for dst, g, key, ent in pending:
+                if os.path.exists(dst):
+                    continue
+                torchaudio.save(dst, g, GAME_RATE, encoding="PCM_S", bits_per_sample=16)
+                log[key] = ent
+            if all(os.path.exists(os.path.join(OUT, f"{c[0]}_t{take}.wav")) for c in s["cuts"]) or attempt == TRIES - 1:
                 break
             print(f"   ...{fails} not cut: trying {s['key']} again", flush=True)
     with open(os.path.join(OUT, "pieces.json"), "w") as f:
