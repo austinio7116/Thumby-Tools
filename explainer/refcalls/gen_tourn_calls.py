@@ -31,8 +31,13 @@ import torchaudio
 from gen_refcalls import TAG, REF, REF_TEXT, NFE, HEADROOM, GAME_RATE, PEAK
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(HERE, f"tourn_{TAG}")
-NUM = ["", "one", "two", "three", "four", "five", "six", "seven", "eight"]
+OUT = os.path.join(HERE, f"tourn_{TAG}" + ("" if os.environ.get("TOURN_RANGE", "1-8") == "1-8" else "_916"))
+NUM = ["", "one", "two", "three", "four", "five", "six", "seven", "eight",
+       "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen"]
+# TOURN_RANGE=9-16: only the names nine to sixteen (a draw of sixteen, added
+# 10-12), into tourn_<voice>_916/ -- the picked one-to-eight never touched
+_lo, _, _hi = os.environ.get("TOURN_RANGE", "1-8").partition("-")
+LO, HI = int(_lo), int(_hi or _lo)
 TAIL_MS = 70
 SILENCE = 0.35
 CARRY = "Please make your way there."
@@ -40,7 +45,7 @@ CARRY = "Please make your way there."
 # ---- the sentences, and the pieces each gives -----------------------------
 # a match call for every opening number; the second numbers a permutation, so
 # each appears once; the tables round twice
-SECOND = [0, 6, 5, 8, 7, 2, 1, 4, 3]
+SECOND = [0, 6, 5, 8, 7, 2, 1, 4, 3, 14, 13, 16, 15, 10, 9, 12, 11]
 
 
 def sentences():
@@ -49,16 +54,21 @@ def sentences():
     and the cut goes inside that pause, so the piece's last sound is whole.
     (Commas made no pause: F5 runs straight through them.)"""
     S = []
-    for n in range(1, 9):
+    for n in range(LO, HI + 1):
         m, t = SECOND[n], (n - 1) % 4 + 1
+        cuts = [("open_%d" % n, None, "player", NUM[n]), ("second_%d" % m, "and", None, NUM[m])]
+        if LO == 1:
+            cuts.append(("table_%d" % t, "to", None, NUM[t], "end"))
         S.append({"key": f"match{n}", "text": f"Player {NUM[n]}... and player {NUM[m]}... to table {NUM[t]}. {CARRY}",
-                  "cuts": [("open_%d" % n, None, "player", NUM[n]),
-                           ("second_%d" % m, "and", None, NUM[m]),
-                           ("table_%d" % t, "to", None, NUM[t], "end")]})
-    for n in range(1, 9):
+                  "cuts": cuts})
+    for n in range(LO, HI + 1):
+        cuts = [("close_%d" % n, "player", None, NUM[n], "end")]
+        if LO == 1:
+            cuts.insert(0, ("lead_champion", None, "your", "is"))
         S.append({"key": f"champ{n}", "text": f"Your tournament champion is... player {NUM[n]}. Congratulations to everyone who played.",
-                  "cuts": [("lead_champion", None, "your", "is"),
-                           ("close_%d" % n, "player", None, NUM[n], "end")]})
+                  "cuts": cuts})
+    if LO != 1:
+        return S
     S.append({"key": "final", "text": "The final... player two... and player seven... to table one. Good luck to both players.",
               "cuts": [("lead_final", None, "the", "final")]})
     S.append({"key": "walkover", "text": "Player four... has a walkover. Please wait for the next call.",
@@ -75,7 +85,7 @@ def sentences():
 def norm(w):
     """a heard word, as letters: Whisper writes numbers as digits ("player 3")"""
     d = "".join(c for c in w if c.isdigit())
-    if d and 1 <= int(d) <= 8:
+    if d and 1 <= int(d) <= 16:
         return NUM[int(d)]
     return "".join(c for c in w.lower() if c.isalpha())
 
@@ -98,6 +108,7 @@ def quietest(w, sr, a, b):
 # is a stretch of real silence -- the cut is at the END of that stretch, so
 # everything the piece's last sound did, release and all, is in the clip. A
 # piece with no such silence is not cut.
+TRIES = int(os.environ.get("TOURN_TRIES", "8"))
 QUIET_MIN = 0.14    # seconds of quiet that make the pause (a stop's closure inside a word is shorter)
 KEEP = 0.37         # at most this much silence kept after the last sound
 
@@ -137,9 +148,13 @@ def main():
     log = {}
     for take in range(1, takes + 1):
         for s in sentences():
+          # ONLY WHAT IS MISSING (Mark: "avoid wasting time"): a sentence whose
+          # pieces all have this take already is not generated again
+          if all(os.path.exists(os.path.join(OUT, f"{c[0]}_t{take}.wav")) for c in s["cuts"]):
+              continue
           # A SENTENCE IS TRIED AGAIN, with a new seed, until every piece of it
           # cuts inside a real pause (up to 8 tries); its pieces are kept together
-          for attempt in range(8):
+          for attempt in range(TRIES):
             seed = 1000 * take + sum(map(ord, s["key"])) % 997 + 7919 * attempt
             pending, fails = [], 0
             line = s["text"]
@@ -184,7 +199,11 @@ def main():
                     ws = words[i0]["start"]
                     before = [r for r in runs if ws - 0.30 <= r[1] <= ws + 0.15]
                     lo = int(before[-1][0] * sr) if before else quietest(w, sr, words[i0 - 1]["end"], ws)
-                hi = min(len(env10), int((words[i0]["start"] + 0.45) * sr))
+                # to the END of the word: F5 can leave more than half a second
+                # of silence before its first word, and Whisper's start for it
+                # is often too early (the search stopping at start + 0.45 s
+                # found no voice and threw good takes away)
+                hi = min(len(env10), int((max(words[i0]["end"], words[i0]["start"] + 0.45) + 0.20) * sr))
                 on = (env10[lo:hi] >= strong).nonzero()
                 if not on.numel():
                     print(f"   {name}: NO VOICE at {first!r} -- not cut"); fails += 1; continue
@@ -214,7 +233,7 @@ def main():
                 dst = os.path.join(OUT, f"{name}_t{take}.wav")
                 pending.append((dst, g, f"{name}_t{take}", {"from": s["key"], "seed": seed, "heard": heard,
                                                             "sec": round(g.shape[-1] / GAME_RATE, 3)}))
-            if fails == 0 or attempt == 7:
+            if fails == 0 or attempt == TRIES - 1:
                 os.makedirs(os.path.join(OUT, "raw"), exist_ok=True)
                 torchaudio.save(os.path.join(OUT, "raw", f"{s['key']}_t{take}.wav"), w.unsqueeze(0), sr, encoding="PCM_S", bits_per_sample=16)
                 for dst, g, key, ent in pending:
