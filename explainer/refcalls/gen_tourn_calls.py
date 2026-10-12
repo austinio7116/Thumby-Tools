@@ -167,15 +167,28 @@ def main():
                     fails += 1
                     continue
                 runs = quiet_runs(w, sr)
+                # THE START: where the VOICE begins, not where the silence ends --
+                # F5 breathes in after a pause, and a cut at the silence's end kept
+                # the breath (Mark: "and player... always has an X ending at the
+                # start of it"). The first moment the sound is well above a
+                # breath's level, then back 20 ms for a vowel ("and") or 80 ms for
+                # a consonant, so a t or p keeps its puff of air.
+                k10 = int(0.010 * sr)
+                env10 = torch.nn.functional.avg_pool1d(w.abs().view(1, 1, -1), k10, stride=1, padding=k10 // 2).view(-1)
+                strong = float(env10.max()) * 0.12
+                first = norm(words[i0]["word"])
+                back = 0.02 if first[:1] in "aeiou" else 0.08
                 if i0 == 0:
-                    env = w.abs()
-                    loud = (env > env.max() * 0.02).nonzero()
-                    a = max(0, int(loud[0]) - int(sr * 0.03)) if loud.numel() else 0
+                    lo = 0
                 else:
-                    # the start: the end of the gap before the word, else the quietest point before it
                     ws = words[i0]["start"]
                     before = [r for r in runs if ws - 0.30 <= r[1] <= ws + 0.15]
-                    a = int((before[-1][1] - 0.03) * sr) if before else quietest(w, sr, words[i0 - 1]["end"], ws)
+                    lo = int(before[-1][0] * sr) if before else quietest(w, sr, words[i0 - 1]["end"], ws)
+                hi = min(len(env10), int((words[i0]["start"] + 0.45) * sr))
+                on = (env10[lo:hi] >= strong).nonzero()
+                if not on.numel():
+                    print(f"   {name}: NO VOICE at {first!r} -- not cut"); fails += 1; continue
+                a = max(lo, lo + int(on[0]) - int(back * sr))
                 # THE END: the silence that ends where the NEXT word begins --
                 # the one whose end is nearest the next word's start
                 if i1 + 1 >= len(words):
@@ -202,6 +215,8 @@ def main():
                 pending.append((dst, g, f"{name}_t{take}", {"from": s["key"], "seed": seed, "heard": heard,
                                                             "sec": round(g.shape[-1] / GAME_RATE, 3)}))
             if fails == 0 or attempt == 7:
+                os.makedirs(os.path.join(OUT, "raw"), exist_ok=True)
+                torchaudio.save(os.path.join(OUT, "raw", f"{s['key']}_t{take}.wav"), w.unsqueeze(0), sr, encoding="PCM_S", bits_per_sample=16)
                 for dst, g, key, ent in pending:
                     torchaudio.save(dst, g, GAME_RATE, encoding="PCM_S", bits_per_sample=16)
                     log[key] = ent
