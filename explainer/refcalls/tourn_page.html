@@ -1,0 +1,171 @@
+<title>Tournament Referee Calls</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&family=Source+Sans+3:wght@400;600&display=swap">
+<style>
+/* layout: a slate header with the call buttons; below it, each set of pieces as rows of takes */
+:root {
+  --bg: #f3f2ee; --fg: #1d2421; --muted: #5d6762; --line: #d6d8d2;
+  --slate: #232927; --chalk: #f1f0e8; --accent: #1f6b4a; --pick: #d9eadf;
+  --display: "Kalam", "Comic Sans MS", cursive; --body: "Source Sans 3", system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #161a18; --fg: #e7e9e4; --muted: #9aa49e; --line: #2c332f; --slate: #0e1110; --chalk: #ecebe2; --accent: #57b88b; --pick: #1f3a2c; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #161a18; --fg: #e7e9e4; --muted: #9aa49e; --line: #2c332f; --slate: #0e1110; --chalk: #ecebe2; --accent: #57b88b; --pick: #1f3a2c; color-scheme: dark }
+body { background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 15px; }
+.wrap { max-width: 980px; margin: 0 auto; padding-inline: 16px; padding-block: 20px 48px; display: grid; gap: 22px; }
+.slate { background: var(--slate); color: var(--chalk); border-radius: 10px; padding: 18px 20px; display: grid; gap: 14px; }
+.slate h1 { font-family: var(--display); font-weight: 700; font-size: 30px; margin: 0; text-wrap: balance; }
+.slate p { margin: 0; opacity: .85; max-width: 65ch; line-height: 1.45; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+button { font: inherit; cursor: pointer; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); padding: 7px 12px; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.slate button { background: transparent; color: var(--chalk); border-color: rgba(241,240,232,.35); }
+.slate button:hover { border-color: var(--chalk); }
+.slate button.on { background: var(--chalk); color: var(--slate); }
+.said { font-family: var(--display); font-size: 22px; min-height: 1.5em; }
+h2 { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; }
+.set { display: grid; gap: 4px; }
+.piece { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.piece .t { min-width: 0; }
+.takes { display: flex; gap: 6px; }
+.takes button { min-width: 64px; }
+.takes button.sel { background: var(--pick); border-color: var(--accent); font-weight: 600; }
+.picks { display: grid; gap: 8px; }
+textarea { width: 100%; box-sizing: border-box; min-height: 90px; font: 12px/1.4 ui-monospace, monospace; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+.note { color: var(--muted); font-size: 13px; }
+</style>
+
+<div class="wrap">
+  <section class="slate">
+    <h1>Tournament referee calls</h1>
+    <p>Every call is put together from short pieces cut from whole sentences. Pick a voice, play calls, and change a piece's take below when a join sounds stitched. Calls use the takes you have picked.</p>
+    <div class="row" id="voices"></div>
+    <div class="row">
+      <button id="c-match">A match call</button>
+      <button id="c-final">The final</button>
+      <button id="c-wo">A walkover</button>
+      <button id="c-champ">The champion</button>
+      <button id="c-five">Five calls in a row</button>
+    </div>
+    <div class="row">
+      <button id="c-open">Room open</button>
+      <button id="c-begin">Begins in five minutes</button>
+      <button id="c-draw">Draw made</button>
+    </div>
+    <div class="said" id="said" aria-live="polite"></div>
+  </section>
+  <div id="sets"></div>
+  <section class="picks">
+    <h2>Your picks</h2>
+    <p class="note">Copy this and paste it back to Claude when you are happy with the calls.</p>
+    <textarea id="picks" readonly></textarea>
+    <div class="row"><button id="copy">Copy picks</button><span class="note" id="copied"></span></div>
+  </section>
+</div>
+
+<script>
+const HAVE = /*HAVE*/{};
+const NUM = ["", "one", "two", "three", "four", "five", "six", "seven", "eight"];
+const SETS = [
+  ["Opening names", n => "open_" + n, n => "Player " + NUM[n], 8],
+  ["Second names", n => "second_" + n, n => "and player " + NUM[n] + ",", 8],
+  ["Tables", n => "table_" + n, n => "to table " + NUM[n] + ".", 4],
+  ["Closing names", n => "close_" + n, n => "player " + NUM[n] + ".", 8],
+  ["Lead-ins and walkover", null, null, 0],
+  ["Fixed lines", null, null, 0],
+];
+const OTHERS = { "Lead-ins and walkover": [["lead_final", "The final:"], ["lead_champion", "Your tournament champion is"], ["walkover", "has a walkover."]],
+                 "Fixed lines": [["fixed_open", "The tournament room is open."], ["fixed_five", "The tournament begins in five minutes."], ["fixed_draw", "The draw has been made."]] };
+let voice = "narrator";
+const VNAMES = { narrator: "Male", female: "Female" };
+let picks = {};
+try { picks = JSON.parse(localStorage.getItem("tourn_picks") || "{}"); } catch (e) {}
+const take = (v, p) => (picks[v] && picks[v][p]) || ((HAVE[v] && HAVE[v][p] && HAVE[v][p][0]) || 1);
+
+let ctx = null; const cache = {};
+async function buf(v, p, t) {
+  const k = v + "/" + p + "_t" + t;
+  if (!cache[k]) cache[k] = fetch(k + ".wav").then(r => r.arrayBuffer()).then(a => ctx.decodeAudioData(a));
+  return cache[k];
+}
+// join pieces: each [piece, gap ms before it]; a short crossfade where the gap is 0
+async function play(parts, text) {
+  if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const bs = await Promise.all(parts.map(([p]) => buf(voice, p, take(voice, p))));
+  const sr = bs[0].sampleRate, xf = Math.round(sr * 0.008);
+  let len = 0;
+  bs.forEach((b, i) => { const g = Math.round(sr * parts[i][1] / 1000); len += b.length + (i ? (g > 0 ? g : -xf) : 0); });
+  const out = ctx.createBuffer(1, len, sr), o = out.getChannelData(0);
+  let at = 0;
+  bs.forEach((b, i) => {
+    const d = b.getChannelData(0), g = Math.round(sr * parts[i][1] / 1000);
+    if (i) at += g > 0 ? g : -xf;
+    for (let j = 0; j < d.length; j++) {
+      let s = d[j];
+      if (i && g <= 0 && j < xf) s *= j / xf;
+      if (i + 1 < bs.length && parts[i + 1][1] <= 0 && j >= d.length - xf) s *= (d.length - j) / xf;
+      o[at + j] += s;
+    }
+    at += d.length;
+  });
+  const src = ctx.createBufferSource(); src.buffer = out; src.connect(ctx.destination); src.start();
+  document.getElementById("said").textContent = text;
+  return new Promise(r => src.onended = r);
+}
+const rnd = n => 1 + Math.floor(Math.random() * n);
+function pair() { let a = rnd(8), b = rnd(8); while (b === a) b = rnd(8); return a < b ? [a, b] : [b, a]; }
+const cap = s => s[0].toUpperCase() + s.slice(1);
+function matchCall() { const [a, b] = pair(), t = rnd(4);
+  return [[["open_" + a, 0], ["second_" + b, 0], ["table_" + t, 200]], `Player ${NUM[a]} and player ${NUM[b]}, to table ${NUM[t]}.`]; }
+function finalCall() { const [a, b] = pair();
+  return [[["lead_final", 0], ["open_" + a, 250], ["second_" + b, 0], ["table_1", 200]], `The final: player ${NUM[a]} and player ${NUM[b]}, to table one.`]; }
+function woCall() { const a = rnd(8); return [[["open_" + a, 0], ["walkover", 40]], `Player ${NUM[a]} has a walkover.`]; }
+function champCall() { const a = rnd(8); return [[["lead_champion", 0], ["close_" + a, 60]], `Your tournament champion is player ${NUM[a]}.`]; }
+const go = f => () => { const [p, t] = f(); play(p, t); };
+document.getElementById("c-match").onclick = go(matchCall);
+document.getElementById("c-final").onclick = go(finalCall);
+document.getElementById("c-wo").onclick = go(woCall);
+document.getElementById("c-champ").onclick = go(champCall);
+document.getElementById("c-open").onclick = () => play([["fixed_open", 0]], "The tournament room is open.");
+document.getElementById("c-begin").onclick = () => play([["fixed_five", 0]], "The tournament begins in five minutes.");
+document.getElementById("c-draw").onclick = () => play([["fixed_draw", 0]], "The draw has been made.");
+document.getElementById("c-five").onclick = async () => {
+  for (let i = 0; i < 5; i++) { const [p, t] = [matchCall, matchCall, finalCall, woCall, champCall][i](); await play(p, t);
+    await new Promise(r => setTimeout(r, 700)); } };
+
+function savePicks() {
+  try { localStorage.setItem("tourn_picks", JSON.stringify(picks)); } catch (e) {}
+  const lines = Object.keys(HAVE).map(v => v + ": " + Object.keys(HAVE[v]).sort().map(p => p + "=" + take(v, p)).join(" "));
+  document.getElementById("picks").value = lines.join("\n");
+}
+function render() {
+  const vb = document.getElementById("voices"); vb.innerHTML = "";
+  Object.keys(VNAMES).filter(v => HAVE[v]).forEach(v => {
+    const b = document.createElement("button"); b.textContent = VNAMES[v] + " voice"; b.className = v === voice ? "on" : "";
+    b.onclick = () => { voice = v; render(); }; vb.appendChild(b); });
+  const host = document.getElementById("sets"); host.innerHTML = "";
+  SETS.forEach(([title, key, label, n]) => {
+    const sec = document.createElement("section"); sec.className = "set";
+    sec.innerHTML = `<h2>${title}</h2>`;
+    const items = key ? Array.from({ length: n }, (_, i) => [key(i + 1), label(i + 1)]) : OTHERS[title];
+    items.forEach(([p, text]) => {
+      const row = document.createElement("div"); row.className = "piece";
+      const t = document.createElement("div"); t.className = "t"; t.textContent = cap(text);
+      const tk = document.createElement("div"); tk.className = "takes";
+      ((HAVE[voice] || {})[p] || []).forEach(k => {
+        const b = document.createElement("button"); b.textContent = "Take " + k; b.className = take(voice, p) === k ? "sel" : "";
+        b.onclick = () => { picks[voice] = picks[voice] || {}; picks[voice][p] = k; savePicks(); render(); play([[p, 0]], cap(text)); };
+        tk.appendChild(b); });
+      if (!tk.children.length) { const s = document.createElement("span"); s.className = "note"; s.textContent = "not cut"; tk.appendChild(s); }
+      row.append(t, tk); sec.appendChild(row); });
+    host.appendChild(sec); });
+  savePicks();
+}
+document.getElementById("copy").onclick = () => {
+  const ta = document.getElementById("picks");
+  navigator.clipboard.writeText(ta.value).then(() => document.getElementById("copied").textContent = "Copied",
+    () => { ta.select(); document.getElementById("copied").textContent = "Selected: copy it with your keyboard"; });
+};
+render();
+</script>
