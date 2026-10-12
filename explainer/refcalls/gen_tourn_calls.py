@@ -237,6 +237,8 @@ def main():
                 os.makedirs(os.path.join(OUT, "raw"), exist_ok=True)
                 torchaudio.save(os.path.join(OUT, "raw", f"{s['key']}_t{take}.wav"), w.unsqueeze(0), sr, encoding="PCM_S", bits_per_sample=16)
                 for dst, g, key, ent in pending:
+                    if os.path.exists(dst):         # a piece already made is kept: only gaps are filled
+                        continue
                     torchaudio.save(dst, g, GAME_RATE, encoding="PCM_S", bits_per_sample=16)
                     log[key] = ent
                 break
